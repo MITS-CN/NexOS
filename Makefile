@@ -30,19 +30,21 @@ all: build/NexOS-NEXT.iso $(IMAGE_DIR)/disk.img
 # 运行
 # ============================================================
 run: $(IMAGE_DIR)/disk.img $(IMAGE_DIR)/disk2.img
-	@pkill -f '^qemu-system-i386' 2>/dev/null || true
+	@-pkill -x qemu-system-i386 2>/dev/null
 	@sleep 1
+	@rm -f /tmp/qemu-dbg.log
 	qemu-system-i386 \
 	    -drive file=$(IMAGE_DIR)/disk.img,format=raw,if=ide,index=0 \
 	    -drive file=$(IMAGE_DIR)/disk2.img,format=raw,if=ide,index=1 \
-	    -m 64M -no-reboot -no-shutdown \
-	    -display none -serial stdio
+	    -m 128M \
+	    -no-reboot -no-shutdown \
+	    -d int,cpu_reset -D /tmp/qemu-dbg.log
 
 run-iso: build/NexOS-NEXT.iso $(IMAGE_DIR)/disk.img $(IMAGE_DIR)/disk2.img
 	qemu-system-i386 -cdrom build/NexOS-NEXT.iso -boot d \
 	    -drive file=$(IMAGE_DIR)/disk.img,format=raw,if=ide,index=0 \
 	    -drive file=$(IMAGE_DIR)/disk2.img,format=raw,if=ide,index=1 \
-	    -m 64M
+	    -m 128M
 
 # ============================================================
 # 目录
@@ -90,7 +92,9 @@ build/NexOS-NEXT.elf: $(OBJS) linker.ld
 # 内核 raw binary（给自写引导器用）
 # ============================================================
 build/kernel.bin: build/NexOS-NEXT.elf
-	objcopy -O binary -R .multiboot $< $@
+	objcopy -O binary -R .multiboot \
+	    --set-section-flags .bss=alloc,load,contents \
+	    $< $@
 
 # 加 512B 头
 build/kernel_payload.bin: build/kernel.bin tools/mkkernel

@@ -174,7 +174,7 @@ int vfs_write(vfs_node_t *node, uint32_t offset,
         /* 磁盘后端 */
         if (node->disk_block == 0xFFFFFFFFu || node->disk_block == 0) {
             uint32_t b = nxfs_alloc_block();
-            if (b == NO_DISK_BLOCK) return -1;
+            if (b == 0xFFFFFFFFu) return -1; 
             node->disk_block = b;
         }
         uint32_t written = nxfs_write_chain(node->disk_block, offset, data, len);

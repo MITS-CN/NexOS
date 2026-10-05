@@ -3,9 +3,10 @@ bits 16
 
 KERNEL_HDR_LBA   equ 17
 KERNEL_DATA_LBA  equ 18
-KERNEL_HDR_ADDR  equ 0x7A00       ; 512B 头的落地地址
-CHUNK_SECTORS    equ 128          ; 每段 64KB
-MAX_CHUNKS       equ 32           ; 上限：2MB
+KERNEL_HDR_ADDR  equ 0x0500       ; ★ 从 0x7A00 改到 0x0500，远离栈
+CHUNK_SECTORS    equ 64           ; ★ 从 120 改到 64，32KB/段，所有 BIOS 都支持
+CHUNK_STRIDE     equ 0x800        ; ★ (64*512)/16 = 0x800
+MAX_CHUNKS       equ 64           ; 2MB 上限
 
 db 'SXN2'
 
@@ -16,14 +17,13 @@ start:
     mov es, ax
     mov ss, ax
     mov sp, 0x7C00
-    sti
 
     mov [boot_drv], dl
 
     mov al, 'S'
     call putc
 
-    ; ---- 读元数据头到 0x0000:0x7A00 ----
+    ; ---- 读元数据头到 0x0000:0x0500 ----
     mov word [dap_count], 1
     mov word [dap_offset], KERNEL_HDR_ADDR
     mov word [dap_segment], 0x0000
@@ -37,7 +37,7 @@ start:
     jc error
 
     ; ---- 检查 'NEXK' ----
-    cmp dword [KERNEL_HDR_ADDR], 0x4B58454E    ; 'NEXK' 小端
+    cmp dword [KERNEL_HDR_ADDR], 0x4B58454E
     jne hdr_error
 
     ; ---- 读 size ----
@@ -45,9 +45,9 @@ start:
     test eax, eax
     jz hdr_error
 
-    ; chunks = (size + 65535) >> 16
-    add eax, 65535
-    shr eax, 16
+    ; chunks = (size + 32767) >> 15
+    add eax, 32767
+    shr eax, 15
 
     cmp eax, MAX_CHUNKS
     ja hdr_error
@@ -70,7 +70,7 @@ start:
     int 0x13
     jc error
 
-    add bx, 0x1000
+    add bx, CHUNK_STRIDE                  ; ★ 用宏，不是硬编码
     add dword [dap_lba], CHUNK_SECTORS
 
     mov al, '.'

@@ -84,15 +84,29 @@ extern const uint8_t init_elf_start[];
 extern const uint8_t init_elf_end[];
 
 void kmain(void) {
+    volatile uint16_t *probe = (volatile uint16_t *)0xB8000;
+    probe[0] = 0x0F10;
+
     serial_init();
+    probe[0] = 0x0F11;
+
     vga_clear();
-    vga_puts("=== FRESH BOOT ===\n");
+    probe[0] = 0x0F12;
+
+    vga_puts("### PROBE BUILD ###\n");
+    probe[0] = 0x0F13;
+
     gdt_init();
+    probe[0] = 0x0F14;   /* 若能看到 '4'，gdt_init 返回了 */
+
     idt_init();
+    probe[0] = 0x0F15;
+
     syscall_init();
+    probe[0] = 0x0F16;
 
     vga_puts("NexOS-NEXT 32-bit microkernel\n");
-    vga_puts("=============================\n");
+    probe[0] = 0x0F17;
 
     pmm_init();      vga_puts("[OK] PMM\n");
     paging_init();      vga_puts("[OK] Paging\n");
@@ -109,8 +123,7 @@ void kmain(void) {
     vga_puts("[OK] User mode (ring 3)\n");
     vga_puts("[OK] IPC\n\n");
 
-    /* ★ 开中断，让后面的 kbd_confirm 能工作 */
-    /* __asm__ volatile("sti"); */   /* ← 注释掉这一行 */
+    __asm__ volatile("sti");
 
     /* ATA 初始化 */
     if (ata_init() < 0) {
@@ -119,7 +132,6 @@ void kmain(void) {
     }
     vga_puts("[OK] ATA (primary master)\n");
 
-    /* ★ 挂载 NXFS，可能会问用户 */
     int nx = nxfs_init();
     if (nx < 0) {
         vga_puts("[FAIL] NXFS mount, code=");

@@ -47,28 +47,32 @@ static void gdt_set(int i, uint32_t base, uint32_t limit,
 }
 
 void gdt_init(void) {
+    volatile uint16_t *probe = (volatile uint16_t *)0xB8000;
+
     gp.limit = sizeof(gdt) - 1;
     gp.base  = (uint32_t)&gdt;
 
     gdt_set(0, 0, 0,          0x00, 0x00);
-    gdt_set(1, 0, 0xFFFFF,    0x9A, 0xCF);   // 0x08 内核代码
-    gdt_set(2, 0, 0xFFFFF,    0x92, 0xCF);   // 0x10 内核数据
-    gdt_set(3, 0, 0xFFFFF,    0xFA, 0xCF);   // 0x18 用户代码
-    gdt_set(4, 0, 0xFFFFF,    0xF2, 0xCF);   // 0x20 用户数据
+    gdt_set(1, 0, 0xFFFFF,    0x9A, 0xCF);
+    gdt_set(2, 0, 0xFFFFF,    0x92, 0xCF);
+    gdt_set(3, 0, 0xFFFFF,    0xFA, 0xCF);
+    gdt_set(4, 0, 0xFFFFF,    0xF2, 0xCF);
+    gdt_set(5, (uint32_t)&tss, sizeof(tss)-1, 0x89, 0x00);
 
-    /* TSS */
-    uint32_t base  = (uint32_t)&tss;
-    uint32_t limit = sizeof(tss) - 1;
-    gdt_set(5, base, limit, 0x89, 0x00);     // 0x28 TSS
-
-    /* 清零 TSS */
     uint8_t *p = (uint8_t *)&tss;
     for (uint32_t i = 0; i < sizeof(tss); i++) p[i] = 0;
-    tss.ss0  = 0x10;
+    tss.ss0 = 0x10;
     tss.iomap_base = sizeof(tss);
 
+    probe[0] = 0x0F41;        /* 'A' — 到达 gdt_flush 前 */
+
     gdt_flush((uint32_t)&gp);
+
+    probe[0] = 0x0F42;        /* 'B' — gdt_flush 返回了 */
+
     tss_flush();
+
+    probe[0] = 0x0F43;        /* 'C' — tss_flush 返回了 */
 }
 
 void gdt_set_kernel_stack(uint32_t esp0) {

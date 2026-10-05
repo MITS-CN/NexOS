@@ -470,18 +470,10 @@ int nxfs_format(void) {
 int nxfs_init(void) {
     extern void vga_puts(const char *);
     extern void vga_hex(uint32_t);
-
-    vga_puts("  [nxfs] reading LBA ");
-    vga_hex(NXFS_PART_LBA + 1);
-    vga_puts("...\n");
+    extern int  kbd_confirm(const char *);
 
     uint8_t sb_buf[512];
     int rr = ata_read_sectors(NXFS_PART_LBA + 1, 1, sb_buf);
-
-    vga_puts("  [nxfs] ata_read returned ");
-    vga_hex((uint32_t)rr);
-    vga_puts("\n");
-
     if (rr < 0) return -1;
 
     for (uint32_t i = 0; i < sizeof(super); i++)
@@ -503,7 +495,11 @@ int nxfs_init(void) {
     if (is_valid_nxfs) {
         vga_puts("  [nxfs] valid superblock, mounting\n");
     } else if (is_blank) {
-        vga_puts("  [nxfs] blank disk, auto-format\n");
+        vga_puts("  [nxfs] blank disk detected.\n");
+        if (!kbd_confirm("  Format as NXFS?")) {
+            vga_puts("  [nxfs] declined, halting.\n");
+            return -101;
+        }
         super.magic         = NXFS_MAGIC;
         super.version       = NXFS_VERSION;
         super.block_sectors = NXFS_BLOCK_SECTORS;
@@ -514,7 +510,16 @@ int nxfs_init(void) {
         super.root_block    = 0;
         need_format = 1;
     } else {
-        vga_puts("  [nxfs] bad superblock, auto-format\n");
+        vga_puts("  [nxfs] WARNING: non-NXFS data on disk.\n");
+        vga_puts("  [nxfs] magic=");
+        vga_hex(super.magic);
+        vga_puts(" expected=");
+        vga_hex(NXFS_MAGIC);
+        vga_puts("\n  [nxfs] ALL DATA WILL BE DESTROYED.\n");
+        if (!kbd_confirm("  Format anyway?")) {
+            vga_puts("  [nxfs] declined, halting.\n");
+            return -101;
+        }
         super.magic         = NXFS_MAGIC;
         super.version       = NXFS_VERSION;
         super.block_sectors = NXFS_BLOCK_SECTORS;
@@ -527,7 +532,7 @@ int nxfs_init(void) {
     }
 
     fat_cache = (uint32_t *)kmalloc(super.total_blocks * 4);
-    if (!fat_cache) { vga_puts("  [nxfs] kmalloc fat failed\n"); return -2; }
+    if (!fat_cache) { vga_puts("  [nxfs] kmalloc failed\n"); return -2; }
 
     bc_init(NXFS_PART_LBA + super.data_lba);
     if (!bc_ready()) { vga_puts("  [nxfs] bc not ready\n"); return -6; }
@@ -543,7 +548,7 @@ int nxfs_init(void) {
     if (!root) { vga_puts("  [nxfs] root alloc failed\n"); return -5; }
     build_tree(root, super.root_block);
 
-    vga_puts("  [nxfs] init done\n");
+    vga_puts("  [nxfs] mounted\n");
     mounted = 1;
     return 0;
 }

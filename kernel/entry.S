@@ -5,7 +5,7 @@
 .long 0x0
 .long -(0x1BADB002)
 
-/* 内核入口 —— 两种方式都从这里开始 */
+/* 内核入口 —— 两种启动方式都从这里开始 */
 .section .text.entry
 .global _start
 .type _start, @function
@@ -27,9 +27,3 @@ _start:
 1:  cli
     hlt
     jmp 1b
-
-.section .bss
-.align 16
-stack_bottom:
-    .skip 16384
-stack_top:
