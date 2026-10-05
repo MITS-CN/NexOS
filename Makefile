@@ -10,6 +10,7 @@ IMAGE_DIR = images
 NXFS_IMG = build/nxfs.img
 
 OBJS = build/serial.o \
+       build/install_stage.o build/install.o \
        build/entry.o build/kmain.o \
        build/gdt.o build/gdt_flush.o \
        build/idt.o build/idt_flush.o \
@@ -98,6 +99,9 @@ build/kernel_payload.bin: build/kernel.bin tools/mkkernel
 
 tools/mkkernel: tools/mkkernel.c
 	$(CC) -O2 -o $@ $<
+
+build/install_stage.o: kernel/install_stage.S build/stage1.bin build/stage2.bin | build
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # ============================================================
 # 引导器

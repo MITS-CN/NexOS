@@ -153,4 +153,13 @@ static inline int sys_exec(const char *path) {
     return r;
 }
 
+static inline int sys_install(int drive) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(21), "b"(drive)
+        : "ecx", "edx", "esi", "edi", "memory");
+    return r;
+}
+
 #endif

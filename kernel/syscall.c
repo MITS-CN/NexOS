@@ -11,6 +11,7 @@
 #include "heap.h"
 #include "paging.h"
 #include "pmm.h"
+#include "install.h"
 #include <stdint.h>
 
 #define SYS_PRINT    1
@@ -33,6 +34,7 @@
 #define SYS_FG      18
 #define SYS_YIELD   19
 #define SYS_MEMINFO 20
+#define SYS_INSTALL 21
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -167,6 +169,9 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
 
         case SYS_MEMINFO:
             return (int)(pmm_total_pages() - pmm_used_pages());
+
+        case SYS_INSTALL:
+            return install_to_drive((int)a);
 
         case SYS_SEND: {
             int tid = (int)a;

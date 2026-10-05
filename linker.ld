@@ -5,22 +5,14 @@ SECTIONS {
 
     _kernel_start = .;
 
-    .text.entry : {
-        *(.text.entry)
-    }
-
-    .multiboot : {
-        KEEP(*(.multiboot))
-    }
-
-    .text : {
-        *(.text)
-    }
-
+    .text.entry : { *(.text.entry) }
+    .multiboot : { KEEP(*(.multiboot)) }
+    .text : { *(.text) }
     .rodata : { *(.rodata) }
     .data   : { *(.data) }
 
-    /* .bss 挪到 8MB 处，给 GRUB module 留空间 */
+    _kernel_raw_end = .;          /* ★ 加这行 */
+
     . = 0x800000;
 
     .bss : {

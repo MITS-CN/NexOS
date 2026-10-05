@@ -105,6 +105,7 @@ static void cmd_help(void) {
     puts_("  exit            - exit shell\n");
     puts_("  part            - list partition table\n");
     puts_("  cp <src> <dst>  - copy file\n");
+    puts_("  install [0|1]   - install system to disk (0=master, 1=slave)\n");
     puts_("  exec <path>     - load and run ELF\n");
     puts_("  mkpart N T S C  - create partition N: type T, start LBA S, sectors C\n");
 }
@@ -479,6 +480,34 @@ static void cmd_mkpart(const char *args) {
         puts_("mkpart: ok\n");
 }
 
+static void cmd_install(const char *args) {
+    int drive = 1;
+    if (args && *args) {
+        while (*args == ' ') args++;
+        if (*args == '0') drive = 0;
+        else if (*args == '1') drive = 1;
+    }
+
+    puts_("install: target drive ");
+    putc_('0' + drive);
+    puts_("\n");
+    puts_("install: writing boot + kernel + NXFS + init.elf...\n");
+
+    int r = sys_install(drive);
+    if (r < 0) {
+        if (r == -100) {
+            puts_("install: refused. This is an installed system.\n");
+            puts_("install: Boot from ISO to use the installer.\n");
+        } else {
+            puts_("install: FAILED, code=");
+            char b[4] = { '0' + ((-r) % 10), '\n', 0, 0 };
+            puts_(b);
+        }
+        return;
+    }
+    puts_("install: done.\n");
+}
+
 static void cmd_exec(const char *args) {
     if (!args || !*args) { puts_("exec: missing arg\n"); return; }
 
@@ -553,6 +582,7 @@ static void run_cmd(void) {
     else if (str_prefix(p, "touch ")) cmd_touch(p + 6);
     else if (str_prefix(p, "write ")) cmd_write(p + 6);
     else if (str_prefix(p, "rmdir ")) cmd_rmdir(p + 6);
+    else if (str_prefix(p, "install"))  cmd_install(p + 7);
     else if (str_prefix(p, "rm "))    cmd_rm(p + 3);
     else if (str_prefix(p, "exec "))  cmd_exec(p + 5);
     else if (str_eq(p, "part"))      cmd_part(0);

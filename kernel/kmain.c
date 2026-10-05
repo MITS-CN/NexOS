@@ -16,6 +16,7 @@
 #include "vfs.h"
 #include "ata.h"
 #include "nxfs.h"
+#include "install.h"
 
 #define VGA_MEMORY ((volatile uint16_t *)0xB8000)
 #define VGA_WIDTH  80
@@ -79,6 +80,9 @@ void vga_hex(uint32_t v) {
     vga_puts("0x");
     for (int i = 28; i >= 0; i -= 4) vga_putc(h[(v >> i) & 0xF]);
 }
+
+const uint8_t *g_init_elf_data = 0;
+uint32_t       g_init_elf_size = 0;
 
 /* ---- Multiboot module 查找 ---- */
 
@@ -145,6 +149,14 @@ void kmain(uint32_t magic, uint32_t mbi) {
         vga_puts("[INFO] booted via stage2 (disk)\n");
     }
 
+    if (magic == MULTIBOOT_BOOTLOADER_MAGIC) {
+        vga_puts("[INFO] booted via Multiboot (GRUB/ISO)\n");
+        install_set_installer_mode(1);    /* ★ 安装器模式 */
+    } else {
+        vga_puts("[INFO] booted via stage2 (disk)\n");
+        install_set_installer_mode(0);    /* ★ 已安装系统 */
+    }
+
     pmm_init();         vga_puts("[OK] PMM\n");
     paging_init();      vga_puts("[OK] Paging\n");
     heap_init();        vga_puts("[OK] Heap\n");
@@ -201,6 +213,9 @@ void kmain(uint32_t magic, uint32_t mbi) {
                 vga_hex(elf_buf[1]); vga_putc(' ');
                 vga_hex(elf_buf[2]); vga_putc(' ');
                 vga_hex(elf_buf[3]); vga_putc('\n');
+
+                g_init_elf_data = elf_buf;
+                g_init_elf_size = elf_size;
             }
         }
     }
@@ -232,6 +247,10 @@ void kmain(uint32_t magic, uint32_t mbi) {
         vga_puts("[OK] /init.elf loaded, size=");
         vga_hex(elf_size);
         vga_puts("\n");
+
+        g_init_elf_data = elf_buf;
+        g_init_elf_size = elf_size;
+
     }
 
     /* ============ 加载并执行 ============ */
