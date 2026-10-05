@@ -7,6 +7,7 @@ USER_CFLAGS  = -m32 -std=gnu99 -ffreestanding -O2 -Wall -Wextra \
 USER_LDFLAGS = -m32 -T user/user.ld -ffreestanding -O2 -nostdlib -no-pie
 
 IMAGE_DIR = images
+NXFS_IMG = build/nxfs.img
 
 OBJS = build/serial.o \
        build/entry.o build/kmain.o \
@@ -125,17 +126,12 @@ $(IMAGE_DIR)/disk.img: build/stage1.bin build/stage2.bin build/kernel_payload.bi
 	@if [ ! -f $@ ]; then \
 	    echo "==> creating $@ (64MB)"; \
 	    dd if=/dev/zero of=$@ bs=1M count=64 status=none; \
-	    dd if=build/stage1.bin of=$@ bs=512 seek=0   conv=notrunc status=none; \
-	    dd if=build/stage2.bin of=$@ bs=512 seek=1   conv=notrunc status=none; \
-	    dd if=build/kernel_payload.bin of=$@ bs=512 seek=17 conv=notrunc status=none; \
-	    dd if=$(NXFS_IMG) of=$@ bs=512 seek=2048 conv=notrunc status=none; \
-	    echo "==> disk.img created with boot + NXFS"; \
-	else \
-	    dd if=build/stage1.bin of=$@ bs=512 seek=0   conv=notrunc status=none; \
-	    dd if=build/stage2.bin of=$@ bs=512 seek=1   conv=notrunc status=none; \
-	    dd if=build/kernel_payload.bin of=$@ bs=512 seek=17 conv=notrunc status=none; \
-	    echo "==> boot area updated (NXFS preserved)"; \
 	fi
+	dd if=build/stage1.bin of=$@ bs=512 seek=0   conv=notrunc status=none
+	dd if=build/stage2.bin of=$@ bs=512 seek=1   conv=notrunc status=none
+	dd if=build/kernel_payload.bin of=$@ bs=512 seek=17 conv=notrunc status=none
+	dd if=$(NXFS_IMG) of=$@ bs=1M seek=1 conv=notrunc status=none
+	@echo "==> disk.img updated (boot + NXFS)"
 
 $(IMAGE_DIR)/disk2.img: | $(IMAGE_DIR)
 	@if [ ! -f $@ ]; then \
@@ -143,8 +139,10 @@ $(IMAGE_DIR)/disk2.img: | $(IMAGE_DIR)
 	    echo "==> created $@"; \
 	fi
 
-# NXFS 分区镜像（含 init.elf）
-NXFS_IMG = build/nxfs.img
+#TOOLS
+
+tools/mknxfs: tools/mknxfs.c
+	$(CC) -O2 -o $@ $<
 
 $(NXFS_IMG): build/init.elf tools/mknxfs | build
 	./tools/mknxfs $@ build/init.elf:init.elf

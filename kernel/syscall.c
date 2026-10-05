@@ -7,6 +7,10 @@
 #include "elf.h"
 #include "vfs.h"
 #include "part.h"
+#include "elf_loader.h"
+#include "heap.h"
+#include "paging.h"
+#include "pmm.h"
 #include <stdint.h>
 
 #define SYS_PRINT    1
@@ -25,6 +29,10 @@
 #define SYS_UNLINK  14
 #define SYS_PART_LIST  15
 #define SYS_PART_MKP   16
+#define SYS_EXEC    17
+#define SYS_FG      18
+#define SYS_YIELD   19
+#define SYS_MEMINFO 20
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -101,25 +109,64 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return vfs_unlink((const char *)a);
         }
 
-        case SYS_EXIT:
+        case SYS_EXIT: {
+            /* 1. 切回内核页目录（当前还在用户页目录上） */
+            uint32_t *kdir = paging_kernel_dir();
+            if (current_thread->page_dir &&
+                current_thread->page_dir != kdir) {
+                paging_switch_dir(kdir);
+
+                /* 2. 释放用户空间 */
+                paging_free_dir(current_thread->page_dir);
+                current_thread->page_dir = 0;
+            }
+
+            /* 3. 把键盘还给 prev_owner */
+            thread_t *prev = current_thread->prev_owner;
+            if (prev && prev->state == THREAD_BLOCKED) {
+                prev->state = THREAD_READY;
+                kbd_set_owner(prev);
+            } else {
+                kbd_set_owner(0);
+            }
+
+            /* 4. 标记自己 DEAD */
             current_thread->state = THREAD_DEAD;
             sched_yield();
             return 0;
+        }
 
         case SYS_GETID:
             return current_thread->id;
-
+        
         case SYS_GETCHAR: {
             for (;;) {
+                thread_t *owner = kbd_get_owner();
+                if (owner && owner != current_thread) {
+                    /* 不是前台线程：阻塞 */
+                    current_thread->state = THREAD_BLOCKED;
+                    sched_yield();
+                    continue;
+                }
+                if (!owner) kbd_set_owner(current_thread);   /* ★ 这行 */
+
                 int ch = kbd_getchar();
                 if (ch >= 0) return ch;
-                __asm__ volatile("sti; hlt");   /* 开中断 + 睡眠 */
+                __asm__ volatile("sti; hlt");
             }
         }
 
+        case SYS_YIELD:
+            sched_yield();
+            return 0;
+
+        
         case SYS_PUTCHAR:
             vga_putc((char)a);
             return 0;
+
+        case SYS_MEMINFO:
+            return (int)(pmm_total_pages() - pmm_used_pages());
 
         case SYS_SEND: {
             int tid = (int)a;
@@ -142,6 +189,23 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             for (int i = 0; i < 8; i++) um->data[i] = m.data[i];
             return 0;
         }
+
+        case SYS_FG: {
+            thread_t *t = 0;
+
+            /* 通过 id 找 thread */
+
+            extern thread_t *sched_find(int tid);
+            t = sched_find((int)a);
+            if (!t) return -1;
+            kbd_set_owner(t);
+
+            /* 唤醒新前台（如果它阻塞） */
+
+            if (t->state == THREAD_BLOCKED) t->state = THREAD_READY;
+            return 0;
+        }
+
         case SYS_PART_LIST: {
             /* a = drive, b = 用户缓冲区（4 * 16 字节） */
             if (!user_range_ok(b, 4 * 16)) return -1;
@@ -180,6 +244,54 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             ent.start_lba = start_lba;
             ent.sectors   = sectors;
             return part_set_entry(drive, index, &ent);
+        }
+
+        case SYS_EXEC: {
+            if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
+
+            char kpath[MAX_PATH];
+            const char *upath = (const char *)a;
+            int i = 0;
+            while (upath[i] && i < MAX_PATH - 1) { kpath[i] = upath[i]; i++; }
+            kpath[i] = 0;
+
+            int fd = vfs_open(kpath, 0);
+            if (fd < 0) return -2;
+
+            uint32_t sz = vfs_fd_size(fd);
+            if (sz == 0 || sz > 512 * 1024) { vfs_close(fd); return -3; }
+
+            uint8_t *buf = (uint8_t *)kmalloc(sz);
+            if (!buf) { vfs_close(fd); return -4; }
+
+            int rd = vfs_fd_read(fd, buf, sz);
+            vfs_close(fd);
+            if (rd != (int)sz) { kfree(buf); return -5; }
+
+            uint32_t *dir = paging_create_dir();
+            if (!dir) { kfree(buf); return -6; }
+
+            elf_load_result_t elf;
+            int r = elf_load_to_dir(dir, buf, sz, &elf);
+            kfree(buf);
+            if (r != 0) return -7;
+
+            thread_t *t = thread_create_elf(elf.entry, elf.stack_top, dir);
+            if (!t) return -8;
+
+            /* 记录链：新线程的 prev_owner 是当前 owner */
+            t->prev_owner = kbd_get_owner();
+            if (!t->prev_owner) t->prev_owner = current_thread;
+
+            /* 键盘交给新线程 */
+            kbd_set_owner(t);
+
+            /* 当前线程阻塞，等新线程退出 */
+            current_thread->state = THREAD_BLOCKED;
+            sched_yield();
+
+            /* 被唤醒后（新线程 exit）继续执行，返回 tid */
+            return t->id;
         }
 
         default:

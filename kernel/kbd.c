@@ -11,6 +11,7 @@ static volatile uint32_t kbd_tail = 0;
 
 static int shift_pressed = 0;
 static int ctrl_pressed  = 0;
+static thread_t *kbd_owner = 0; 
 
 /* 普通字符映射（小写） */
 static const char scancode_map[128] = {
@@ -130,3 +131,6 @@ int kbd_confirm(const char *prompt) {
         }
     }
 }
+
+thread_t *kbd_get_owner(void) { return kbd_owner; }
+void      kbd_set_owner(thread_t *t) { kbd_owner = t; }

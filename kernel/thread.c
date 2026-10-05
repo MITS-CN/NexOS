@@ -36,6 +36,7 @@ thread_t *thread_create_user(void (*entry)(void)) {
     t->id         = next_id++;
     t->state      = THREAD_READY;
     t->is_user    = 1;
+    t->page_dir = 0;
     t->msg_head   = 0;
     t->msg_tail   = 0;
     t->next       = 0;
@@ -54,7 +55,7 @@ thread_t *thread_create_user(void (*entry)(void)) {
     return t;
 }
 
-thread_t *thread_create_elf(uint32_t entry, uint32_t stack_top) {
+thread_t *thread_create_elf(uint32_t entry, uint32_t stack_top, uint32_t *page_dir) {
     thread_t *t = (thread_t *)kmalloc(sizeof(thread_t));
     if (!t) return 0;
 
@@ -70,6 +71,7 @@ thread_t *thread_create_elf(uint32_t entry, uint32_t stack_top) {
     t->msg_head   = 0;
     t->msg_tail   = 0;
     t->next       = 0;
+    t->page_dir = page_dir;
 
     uint32_t *sp = t->kernel_stack + (STACK_SIZE / sizeof(uint32_t));
     sp = (uint32_t *)((uint32_t)sp & ~15u);
@@ -99,6 +101,7 @@ thread_t *thread_create(void (*entry)(void)) {
     t->id           = next_id++;
     t->state        = THREAD_READY;
     t->is_user      = 0;
+    t->page_dir = 0;
     t->msg_head     = 0;
     t->msg_tail     = 0;
     t->next         = 0;

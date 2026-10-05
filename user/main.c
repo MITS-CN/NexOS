@@ -104,6 +104,8 @@ static void cmd_help(void) {
     puts_("  rmdir <dir>     - delete empty directory\n");
     puts_("  exit            - exit shell\n");
     puts_("  part            - list partition table\n");
+    puts_("  cp <src> <dst>  - copy file\n");
+    puts_("  exec <path>     - load and run ELF\n");
     puts_("  mkpart N T S C  - create partition N: type T, start LBA S, sectors C\n");
 }
 
@@ -309,6 +311,55 @@ static void cmd_rm(const char *args) {
         if (sys_unlink(path) < 0) puts_("rm: failed (dir not empty?)\n");
     }
 }
+static void cmd_cp(const char *args) {
+    if (!args || !*args) { puts_("cp: missing args\n"); return; }
+
+    char src_word[MAX_PATH];
+    const char *p = args;
+    if (take_word(p, src_word, MAX_PATH) == 0) {
+        puts_("cp: missing src\n");
+        return;
+    }
+    while (*p && *p != ' ') p++;
+    while (*p == ' ') p++;
+
+    char dst_word[MAX_PATH];
+    if (take_word(p, dst_word, MAX_PATH) == 0) {
+        puts_("cp: missing dst\n");
+        return;
+    }
+
+    char src[MAX_PATH], dst[MAX_PATH];
+    resolve_path(src_word, src, MAX_PATH);
+    resolve_path(dst_word, dst, MAX_PATH);
+
+    puts_("cp: src="); puts_(src);
+    puts_(" dst="); puts_(dst); putc_('\n');
+
+    int sfd = sys_open(src, 0);
+    if (sfd < 0) { puts_("cp: cannot open source\n"); return; }
+
+    int dfd = sys_open(dst, 0x0100 | 0x0200);   /* O_CREAT | O_TRUNC */
+    if (dfd < 0) {
+        puts_("cp: cannot create dest\n");
+        sys_close(sfd);
+        return;
+    }
+
+    static char cp_buf[512];
+    for (;;) {
+        int n = sys_read(sfd, cp_buf, sizeof(cp_buf));
+        if (n <= 0) break;
+        int w = sys_write(dfd, cp_buf, n);
+        if (w != n) {
+            puts_("cp: write failed\n");
+            break;
+        }
+    }
+
+    sys_close(sfd);
+    sys_close(dfd);
+}
 
 static void cmd_part(const char *args) {
     int drive = 0;
@@ -428,6 +479,53 @@ static void cmd_mkpart(const char *args) {
         puts_("mkpart: ok\n");
 }
 
+static void cmd_exec(const char *args) {
+    if (!args || !*args) { puts_("exec: missing arg\n"); return; }
+
+    char word[MAX_PATH];
+    if (take_word(args, word, MAX_PATH) == 0) {
+        puts_("exec: missing arg\n");
+        return;
+    }
+
+    char path[MAX_PATH];
+    resolve_path(word, path, MAX_PATH);
+
+    puts_("exec: loading "); puts_(path); puts_("\n");
+
+    int tid = sys_exec(path);
+
+    /* 成功的话 sys_exec 不会返回——本进程阻塞等新进程退出 */
+    if (tid < 0) {
+        puts_("exec: failed, code=");
+        char b[4] = { '0' + ((-tid) % 10), '\n', 0, 0 };
+        puts_(b);
+        return;
+    }
+
+    /* 新进程退出后到这里 */
+    puts_("exec: child exited, tid=");
+    char b[4] = { '0' + (tid % 10), '\n', 0, 0 };
+    puts_(b);
+}
+
+static void cmd_mem(void) {
+    int free = sys_meminfo();
+    puts_("free pages: ");
+    char b[12]; int i = 0;
+    if (free == 0) b[i++] = '0';
+    while (free) { b[i++] = '0' + (free % 10); free /= 10; }
+    while (i--) putc_(b[i]);
+    puts_(" (");
+    /* 简单乘以 4 显示 KB */
+    int kb = sys_meminfo() * 4;
+    i = 0;
+    if (kb == 0) b[i++] = '0';
+    while (kb) { b[i++] = '0' + (kb % 10); kb /= 10; }
+    while (i--) putc_(b[i]);
+    puts_(" KB)\n");
+}
+
 static void run_cmd(void) {
     cmd[cmd_len] = 0;
     putc_('\n');
@@ -450,14 +548,17 @@ static void run_cmd(void) {
     else if (str_eq(p, "ls"))         cmd_ls(0);
     else if (str_prefix(p, "ls "))    cmd_ls(p + 3);
     else if (str_prefix(p, "cat "))   cmd_cat(p + 4);
+    else if (str_prefix(p, "cp "))    cmd_cp(p + 3);
     else if (str_prefix(p, "mkdir ")) cmd_mkdir(p + 6);
     else if (str_prefix(p, "touch ")) cmd_touch(p + 6);
     else if (str_prefix(p, "write ")) cmd_write(p + 6);
     else if (str_prefix(p, "rmdir ")) cmd_rmdir(p + 6);
     else if (str_prefix(p, "rm "))    cmd_rm(p + 3);
+    else if (str_prefix(p, "exec "))  cmd_exec(p + 5);
     else if (str_eq(p, "part"))      cmd_part(0);
     else if (str_prefix(p, "part ")) cmd_part(p + 5);
     else if (str_prefix(p, "mkpart ")) cmd_mkpart(p + 7);
+    else if (str_eq(p, "mem")) cmd_mem();
     else { puts_("unknown: "); puts_(p); putc_('\n'); }
 
     cmd_len = 0;

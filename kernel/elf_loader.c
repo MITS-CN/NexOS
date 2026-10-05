@@ -106,3 +106,13 @@ int elf_load(const void *elf_data, uint32_t elf_size, elf_load_result_t *out) {
     out->stack_top = USER_STACK_TOP;
     return 0;
 }
+int elf_load_to_dir(uint32_t *dir, const void *elf_data, uint32_t elf_size,
+                    elf_load_result_t *out) {
+    if (!dir) return -1;
+
+    uint32_t *old = paging_get_dir();
+    paging_switch_dir(dir);
+    int r = elf_load(elf_data, elf_size, out);
+    paging_switch_dir(old);
+    return r;
+}

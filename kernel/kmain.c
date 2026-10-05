@@ -81,48 +81,29 @@ void vga_hex(uint32_t v) {
 }
 
 void kmain(void) {
-    volatile uint16_t *probe = (volatile uint16_t *)0xB8000;
-    probe[0] = 0x0F10;
-
     serial_init();
-    probe[0] = 0x0F11;
-
     vga_clear();
-    probe[0] = 0x0F12;
-
-    vga_puts("### PROBE BUILD ###\n");
-    probe[0] = 0x0F13;
 
     gdt_init();
-    probe[0] = 0x0F14;   /* 若能看到 '4'，gdt_init 返回了 */
-
     idt_init();
-    probe[0] = 0x0F15;
-
     syscall_init();
-    probe[0] = 0x0F16;
 
     vga_puts("NexOS-NEXT 32-bit microkernel\n");
-    probe[0] = 0x0F17;
+    vga_puts("=============================\n");
 
-    pmm_init();      vga_puts("[OK] PMM\n");
+    pmm_init();         vga_puts("[OK] PMM\n");
     paging_init();      vga_puts("[OK] Paging\n");
     heap_init();        vga_puts("[OK] Heap\n");
     vfs_init();         vga_puts("[OK] VFS (ramfs)\n");
     thread_init();
     timer_init();       vga_puts("[OK] Timer @100Hz\n");
-    vga_puts("BEFORE kbd_init\n");                          
-    kbd_init();
-    vga_puts("AFTER kbd_init\n");
-    //kbd_init();         vga_puts("[OK] Keyboard\n");
-
+    kbd_init();         vga_puts("[OK] Keyboard\n");
     vga_puts("[OK] Syscalls (int 0x80)\n");
     vga_puts("[OK] User mode (ring 3)\n");
     vga_puts("[OK] IPC\n\n");
 
     __asm__ volatile("sti");
 
-    /* ATA 初始化 */
     if (ata_init() < 0) {
         vga_puts("[FAIL] ATA init\n");
         for (;;) __asm__ volatile("hlt");
@@ -140,7 +121,7 @@ void kmain(void) {
     vfs_use_nxfs();
     vga_puts("[OK] VFS now on NXFS\n\n");
 
-        /* 从 NXFS 读 /init.elf */
+    /* 从 NXFS 读 /init.elf */
     vga_puts("Loading /init.elf from NXFS...\n");
 
     int fd = vfs_open("/init.elf", 0);
@@ -176,6 +157,10 @@ void kmain(void) {
     vga_hex(elf_size);
     vga_puts("\n");
 
+
+
+
+
     elf_load_result_t elf;
     int r = elf_load(elf_buf, elf_size, &elf);
     if (r) {
@@ -193,10 +178,7 @@ void kmain(void) {
     vga_hex(elf.stack_top);
     vga_puts("\n\n");
 
-    thread_create_elf(elf.entry, elf.stack_top);
-
-    for (volatile int i = 0; i < 30000000; i++);
-    sched_start();
+    thread_create_elf(elf.entry, elf.stack_top, paging_get_dir());
 
     for (volatile int i = 0; i < 30000000; i++);
     sched_start();

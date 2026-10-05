@@ -1,4 +1,6 @@
 ﻿#include "sched.h"
+#include "paging.h"
+#include "heap.h"
 
 extern void gdt_set_kernel_stack(uint32_t esp0);
 
@@ -29,20 +31,54 @@ static int next_ready(int from) {
     return -1;
 }
 
+/* 回收所有已死线程（不回收 current_thread 自己） */
+static void reclaim_dead_threads(void) {
+    int i = 0;
+    while (i < thread_count) {
+        thread_t *t = threads[i];
+        if (t->state == THREAD_DEAD && t != current_thread) {
+            /* 从调度数组移除 */
+            for (int j = i; j < thread_count - 1; j++)
+                threads[j] = threads[j + 1];
+            thread_count--;
+            if (i < current_idx) current_idx--;
+
+            /* 释放内核栈 */
+            if (t->kernel_stack) kfree(t->kernel_stack);
+
+            /* 释放线程结构 */
+            kfree(t);
+
+            /* 不递增 i——后面的元素已左移 */
+        } else {
+            i++;
+        }
+    }
+    if (thread_count > 0 && current_idx >= thread_count)
+        current_idx = 0;
+}
+
 /* 统一的上下文切换：更新 TSS esp0，再 switch_to */
 static void do_switch(int old_idx, int new_idx) {
     thread_t *old = threads[old_idx];
     thread_t *nxt = threads[new_idx];
 
-    /* 更新 TSS 的 esp0，让 ring 3 进 ring 0 时能切到正确的内核栈 */
     uint32_t *ks = nxt->kernel_stack ? nxt->kernel_stack : nxt->stack_base;
     if (ks) gdt_set_kernel_stack((uint32_t)ks + STACK_SIZE);
 
     current_thread = nxt;
+
+    /* ★ 切页目录 */
+    if (nxt->page_dir && nxt->page_dir != paging_get_dir())
+        paging_switch_dir(nxt->page_dir);
+
     switch_to(&old->esp, nxt->esp);
 }
 
 void sched_tick(void) {
+
+    reclaim_dead_threads();
+
     if (thread_count < 2 || !current_thread) return;
 
     int next = next_ready(current_idx);
@@ -54,6 +90,9 @@ void sched_tick(void) {
 }
 
 void sched_yield(void) {
+
+    reclaim_dead_threads(); 
+
     if (thread_count < 2 || !current_thread) return;
 
     int next = next_ready(current_idx);
@@ -79,11 +118,15 @@ void sched_start(void) {
     current_idx    = 0;
     current_thread = threads[0];
 
-    /* 首次切换前也要设置 esp0 */
     uint32_t *ks = current_thread->kernel_stack
                  ? current_thread->kernel_stack
                  : current_thread->stack_base;
     if (ks) gdt_set_kernel_stack((uint32_t)ks + STACK_SIZE);
+
+    /* ★ 首次切换前切页目录 */
+    if (current_thread->page_dir &&
+        current_thread->page_dir != paging_get_dir())
+        paging_switch_dir(current_thread->page_dir);
 
     uint32_t dummy;
     switch_to(&dummy, current_thread->esp);

@@ -14,7 +14,6 @@ typedef struct message {
     struct message *next;
 } message_t;
 
-/* 用户态可见的消息结构（不含内核用的 next） */
 typedef struct {
     int      sender;
     int      type;
@@ -30,6 +29,8 @@ typedef struct thread {
     int            id;
     int            state;
     int            is_user;
+    uint32_t      *page_dir;
+    struct thread *prev_owner;
     message_t     *msg_head;
     message_t     *msg_tail;
     struct thread *next;
@@ -37,7 +38,7 @@ typedef struct thread {
 
 thread_t *thread_create(void (*entry)(void));
 thread_t *thread_create_user(void (*entry)(void));
-thread_t *thread_create_elf(uint32_t entry, uint32_t stack_top);
+thread_t *thread_create_elf(uint32_t entry, uint32_t stack_top, uint32_t *page_dir);
 void      thread_init(void);
 
 extern thread_t *current_thread;

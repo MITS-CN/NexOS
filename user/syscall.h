@@ -110,7 +110,6 @@ static inline int sys_unlink(const char *path) {
     return r;
 }
 
-/* ★ 加这两个 */
 static inline int sys_part_list(int drive, void *buf) {
     int r;
     __asm__ volatile("int $0x80"
@@ -128,6 +127,29 @@ static inline int sys_part_mkp(int drive, int index, int type,
         : "0"(16), "b"(drive), "c"(index),
           "d"(type), "S"(start_lba), "D"(sectors)
         : "memory");
+    return r;
+}
+
+static inline int sys_meminfo(void) {
+    int r;
+    __asm__ volatile("int $0x80" : "=a"(r) : "0"(20) : "ecx", "edx", "esi", "edi", "memory");
+    return r;
+}
+
+static inline void sys_yield(void) {
+    int dummy;
+    __asm__ volatile("int $0x80"
+        : "=a"(dummy)
+        : "0"(19)
+        : "ebx", "ecx", "edx", "esi", "edi", "memory");
+}
+
+static inline int sys_exec(const char *path) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(17), "b"(path)
+        : "ecx", "edx", "esi", "edi", "memory");
     return r;
 }
 
