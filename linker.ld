@@ -20,6 +20,9 @@ SECTIONS {
     .rodata : { *(.rodata) }
     .data   : { *(.data) }
 
+    /* .bss 挪到 8MB 处，给 GRUB module 留空间 */
+    . = 0x800000;
+
     .bss : {
         _bss_start = .;
         *(COMMON)
@@ -27,7 +30,6 @@ SECTIONS {
         _bss_end = .;
     }
 
-    /* 栈在 .bss 之后独立分配，不占文件空间 */
     . = ALIGN(16);
     stack_bottom = .;
     . += 16384;

@@ -15,6 +15,10 @@ _start:
     mov $stack_top, %esp
     mov %esp, %ebp
 
+    /* 保存 GRUB 传的 magic 和 mbi，清 BSS 前必须存好 */
+    push %eax
+    push %ebx
+
     /* 清 BSS */
     mov $_bss_start, %edi
     mov $_bss_end, %ecx
@@ -22,6 +26,12 @@ _start:
     xor %eax, %eax
     rep stosb
 
+    /* 恢复 magic / mbi */
+    pop %ebx
+    pop %eax
+
+    push %ebx                /* 第二个参数 mbi */
+    push %eax                /* 第一个参数 magic */
     call kmain
 
 1:  cli

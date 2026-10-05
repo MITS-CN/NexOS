@@ -90,9 +90,7 @@ build/NexOS-NEXT.elf: $(OBJS) linker.ld
 # 内核 raw binary（给自写引导器用）
 # ============================================================
 build/kernel.bin: build/NexOS-NEXT.elf
-	objcopy -O binary -R .multiboot \
-	    --set-section-flags .bss=alloc,load,contents \
-	    $< $@
+	objcopy -O binary -R .multiboot -R .bss -R .comment -R .note $< $@
 
 # 加 512B 头
 build/kernel_payload.bin: build/kernel.bin tools/mkkernel
@@ -113,9 +111,10 @@ build/stage2.bin: boot/stage2.asm | build
 # ============================================================
 # ISO（GRUB 启动）
 # ============================================================
-build/NexOS-NEXT.iso: build/NexOS-NEXT.elf grub.cfg
+build/NexOS-NEXT.iso: build/NexOS-NEXT.elf build/init.elf grub.cfg
 	mkdir -p build/iso/boot/grub
 	cp build/NexOS-NEXT.elf build/iso/boot/
+	cp build/init.elf       build/iso/boot/
 	cp grub.cfg build/iso/boot/grub/
 	grub-mkrescue -o $@ build/iso
 

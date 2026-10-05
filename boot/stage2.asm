@@ -155,4 +155,8 @@ pm_entry:
     mov byte [0xB8000], 'P'
     mov byte [0xB8001], 0x0F
 
+    ;告诉内核：无 multiboot，magic=0, mbi=0
+    xor eax, eax
+    xor ebx, ebx
+
     jmp 0x10000

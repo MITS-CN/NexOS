@@ -80,7 +80,55 @@ void vga_hex(uint32_t v) {
     for (int i = 28; i >= 0; i -= 4) vga_putc(h[(v >> i) & 0xF]);
 }
 
-void kmain(void) {
+/* ---- Multiboot module 查找 ---- */
+
+#define MULTIBOOT_BOOTLOADER_MAGIC  0x2BADB002
+
+typedef struct {
+    uint32_t mod_start;
+    uint32_t mod_end;
+    uint32_t cmdline;
+    uint32_t pad;
+} mb_module_t;
+
+/* 在 multiboot info 里按名字找 module。
+   成功返回 0，失败返回 -1。 */
+static int mb_module_find(uint32_t mbi, const char *name,
+                          uint32_t *out_start, uint32_t *out_end) {
+    if (!mbi) return -1;
+
+    uint32_t flags = *(uint32_t *)mbi;
+    if (!(flags & (1u << 3))) return -1;   /* 无 modules */
+
+    uint32_t mods_count = *(uint32_t *)(mbi + 20);
+    uint32_t mods_addr  = *(uint32_t *)(mbi + 24);
+    if (mods_count == 0 || mods_addr == 0) return -1;
+
+    mb_module_t *mods = (mb_module_t *)mods_addr;
+
+    for (uint32_t i = 0; i < mods_count; i++) {
+        const char *cmdline = (const char *)mods[i].cmdline;
+        if (!cmdline) continue;
+
+        /* 比较名字（精确匹配，忽略前导空格） */
+        while (*cmdline == ' ') cmdline++;
+        const char *a = name;
+        const char *b = cmdline;
+        while (*a && *a == *b) { a++; b++; }
+        if (*a != 0) continue;
+        /* 名字后必须是 \0 或空格 */
+        if (*b != 0 && *b != ' ') continue;
+
+        *out_start = mods[i].mod_start;
+        *out_end   = mods[i].mod_end;
+        return 0;
+    }
+    return -1;
+}
+
+/* ---- 内核主函数 ---- */
+
+void kmain(uint32_t magic, uint32_t mbi) {
     serial_init();
     vga_clear();
 
@@ -90,6 +138,12 @@ void kmain(void) {
 
     vga_puts("NexOS-NEXT 32-bit microkernel\n");
     vga_puts("=============================\n");
+
+    if (magic == MULTIBOOT_BOOTLOADER_MAGIC) {
+        vga_puts("[INFO] booted via Multiboot (GRUB/ISO)\n");
+    } else {
+        vga_puts("[INFO] booted via stage2 (disk)\n");
+    }
 
     pmm_init();         vga_puts("[OK] PMM\n");
     paging_init();      vga_puts("[OK] Paging\n");
@@ -121,46 +175,66 @@ void kmain(void) {
     vfs_use_nxfs();
     vga_puts("[OK] VFS now on NXFS\n\n");
 
-    /* 从 NXFS 读 /init.elf */
-    vga_puts("Loading /init.elf from NXFS...\n");
+    /* ============ 获取 init.elf ============ */
+    uint8_t *elf_buf  = 0;
+    uint32_t elf_size = 0;
 
-    int fd = vfs_open("/init.elf", 0);
-    if (fd < 0) {
-        vga_puts("[FAIL] /init.elf not found in NXFS\n");
-        vga_puts("[FAIL] disk may need to be reformatted or\n");
-        vga_puts("[FAIL] init.elf must be installed first.\n");
-        for (;;) __asm__ volatile("hlt");
+    /* 路径 1：Multiboot module（ISO/GRUB 场景） */
+    if (magic == MULTIBOOT_BOOTLOADER_MAGIC) {
+        uint32_t ms = 0, me = 0;
+
+        if (mb_module_find(mbi, "init.elf", &ms, &me) == 0) {
+            vga_puts("[DBG] ms="); vga_hex(ms);
+            vga_puts(" me=");     vga_hex(me);
+            vga_putc('\n');
+
+            if (ms == 0 || me <= ms) {
+                vga_puts("[WARN] module address invalid\n");
+            } else {
+                elf_buf  = (uint8_t *)ms;
+                elf_size = me - ms;
+                vga_puts("[OK] init.elf from GRUB module, size=");
+                vga_hex(elf_size);
+                vga_puts("\n");
+                vga_puts("[DBG] bytes: ");
+                vga_hex(elf_buf[0]); vga_putc(' ');
+                vga_hex(elf_buf[1]); vga_putc(' ');
+                vga_hex(elf_buf[2]); vga_putc(' ');
+                vga_hex(elf_buf[3]); vga_putc('\n');
+            }
+        }
     }
 
-    uint32_t elf_size = vfs_fd_size(fd);
-    if (elf_size == 0 || elf_size > 512 * 1024) {
-        vga_puts("[FAIL] /init.elf size invalid: ");
+    /* 路径 2：从 NXFS 读（磁盘场景 或 无 module） */
+    if (!elf_buf) {
+        vga_puts("Loading /init.elf from NXFS...\n");
+        int fd = vfs_open("/init.elf", 0);
+        if (fd < 0) {
+            vga_puts("[FAIL] /init.elf not found\n");
+            for (;;) __asm__ volatile("hlt");
+        }
+        elf_size = vfs_fd_size(fd);
+        if (elf_size == 0 || elf_size > 512 * 1024) {
+            vga_puts("[FAIL] size invalid\n");
+            for (;;) __asm__ volatile("hlt");
+        }
+        elf_buf = (uint8_t *)kmalloc(elf_size);
+        if (!elf_buf) {
+            vga_puts("[FAIL] kmalloc failed\n");
+            for (;;) __asm__ volatile("hlt");
+        }
+        int rd = vfs_fd_read(fd, elf_buf, elf_size);
+        vfs_close(fd);
+        if (rd != (int)elf_size) {
+            vga_puts("[FAIL] read failed\n");
+            for (;;) __asm__ volatile("hlt");
+        }
+        vga_puts("[OK] /init.elf loaded, size=");
         vga_hex(elf_size);
         vga_puts("\n");
-        for (;;) __asm__ volatile("hlt");
     }
 
-    uint8_t *elf_buf = (uint8_t *)kmalloc(elf_size);
-    if (!elf_buf) {
-        vga_puts("[FAIL] kmalloc for ELF failed\n");
-        for (;;) __asm__ volatile("hlt");
-    }
-
-    int rd = vfs_fd_read(fd, elf_buf, elf_size);
-    vfs_close(fd);
-    if (rd != (int)elf_size) {
-        vga_puts("[FAIL] read /init.elf failed\n");
-        for (;;) __asm__ volatile("hlt");
-    }
-
-    vga_puts("[OK] /init.elf loaded, size=");
-    vga_hex(elf_size);
-    vga_puts("\n");
-
-
-
-
-
+    /* ============ 加载并执行 ============ */
     elf_load_result_t elf;
     int r = elf_load(elf_buf, elf_size, &elf);
     if (r) {
@@ -170,7 +244,9 @@ void kmain(void) {
         for (;;) __asm__ volatile("hlt");
     }
 
-    kfree(elf_buf);
+    /* 只有从 NXFS kmalloc 出来的才 free；module 的是 GRUB 的内存，不动 */
+    if (magic != MULTIBOOT_BOOTLOADER_MAGIC)
+        kfree(elf_buf);
 
     vga_puts("[OK] ELF loaded, entry=");
     vga_hex(elf.entry);
