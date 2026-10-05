@@ -1,13 +1,12 @@
 # NexOS-NEXT
 
 > 一个从零开始、用 C 与 x86 汇编编写的 32 位操作系统内核（`NexOS-NEXT` 分支）。
-
 NexOS-NEXT 包含自举引导、内存管理、分页、多线程调度、进程间通信、系统调用、用户态（ring 3）、ELF 加载、ATA 磁盘驱动、分区表读写，以及一个自研的磁盘文件系统 **NXFS**。内核启动后会加载内嵌的 init 程序，进入一个可交互的 Shell。
 
 - **架构**：i386（32 位保护模式）
 - **语言**：C（`-std=gnu99`）+ GNU/NASM 汇编
 - **许可证**：Apache License 2.0（见 [LICENSE](LICENSE)）
-
+- **简体中文** | [English](README-en.md)
 ---
 
 ## 目录
