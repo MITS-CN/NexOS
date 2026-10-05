@@ -57,4 +57,6 @@ int  vfs_fd_read(int fd, uint8_t *buf, uint32_t len);
 int  vfs_fd_write(int fd, const uint8_t *buf, uint32_t len);
 int  vfs_fd_readdir(int fd, int idx, char *name, int *type);
 
+uint32_t vfs_fd_size(int fd);
+
 #endif

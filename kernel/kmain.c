@@ -80,9 +80,6 @@ void vga_hex(uint32_t v) {
     for (int i = 28; i >= 0; i -= 4) vga_putc(h[(v >> i) & 0xF]);
 }
 
-extern const uint8_t init_elf_start[];
-extern const uint8_t init_elf_end[];
-
 void kmain(void) {
     volatile uint16_t *probe = (volatile uint16_t *)0xB8000;
     probe[0] = 0x0F10;
@@ -143,20 +140,52 @@ void kmain(void) {
     vfs_use_nxfs();
     vga_puts("[OK] VFS now on NXFS\n\n");
 
-    /* 加载 init ELF */
-    uint32_t elf_size = (uint32_t)(init_elf_end - init_elf_start);
-    vga_puts("Loading init ELF (size=");
+        /* 从 NXFS 读 /init.elf */
+    vga_puts("Loading /init.elf from NXFS...\n");
+
+    int fd = vfs_open("/init.elf", 0);
+    if (fd < 0) {
+        vga_puts("[FAIL] /init.elf not found in NXFS\n");
+        vga_puts("[FAIL] disk may need to be reformatted or\n");
+        vga_puts("[FAIL] init.elf must be installed first.\n");
+        for (;;) __asm__ volatile("hlt");
+    }
+
+    uint32_t elf_size = vfs_fd_size(fd);
+    if (elf_size == 0 || elf_size > 512 * 1024) {
+        vga_puts("[FAIL] /init.elf size invalid: ");
+        vga_hex(elf_size);
+        vga_puts("\n");
+        for (;;) __asm__ volatile("hlt");
+    }
+
+    uint8_t *elf_buf = (uint8_t *)kmalloc(elf_size);
+    if (!elf_buf) {
+        vga_puts("[FAIL] kmalloc for ELF failed\n");
+        for (;;) __asm__ volatile("hlt");
+    }
+
+    int rd = vfs_fd_read(fd, elf_buf, elf_size);
+    vfs_close(fd);
+    if (rd != (int)elf_size) {
+        vga_puts("[FAIL] read /init.elf failed\n");
+        for (;;) __asm__ volatile("hlt");
+    }
+
+    vga_puts("[OK] /init.elf loaded, size=");
     vga_hex(elf_size);
-    vga_puts(")...\n");
+    vga_puts("\n");
 
     elf_load_result_t elf;
-    int r = elf_load(init_elf_start, elf_size, &elf);
+    int r = elf_load(elf_buf, elf_size, &elf);
     if (r) {
         vga_puts("[FAIL] elf_load = ");
         vga_hex((uint32_t)r);
         vga_puts("\n");
         for (;;) __asm__ volatile("hlt");
     }
+
+    kfree(elf_buf);
 
     vga_puts("[OK] ELF loaded, entry=");
     vga_hex(elf.entry);
@@ -165,6 +194,9 @@ void kmain(void) {
     vga_puts("\n\n");
 
     thread_create_elf(elf.entry, elf.stack_top);
+
+    for (volatile int i = 0; i < 30000000; i++);
+    sched_start();
 
     for (volatile int i = 0; i < 30000000; i++);
     sched_start();

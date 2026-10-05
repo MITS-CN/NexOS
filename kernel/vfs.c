@@ -291,6 +291,11 @@ int vfs_fd_read(int fd, uint8_t *buf, uint32_t len) {
     return n;
 }
 
+uint32_t vfs_fd_size(int fd) {
+    if (fd < 0 || fd >= MAX_FDS || !fd_table[fd].used) return 0;
+    return fd_table[fd].node->size;
+}
+
 int vfs_fd_readdir(int fd, int idx, char *name, int *type) {
     if (fd < 0 || fd >= MAX_FDS || !fd_table[fd].used) return -1;
     return vfs_readdir(fd_table[fd].node, idx, name, type);

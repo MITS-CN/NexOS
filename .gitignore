@@ -1,21 +1,26 @@
 # 构建产物
-build/
+/build/
+/images/
 
-# 磁盘镜像（大文件，本地生成）
-images/
+tools/mknxfs
+tools/mkkernel
 
-# 生成的文件
+# 中间文件
+*.o
 *.iso
 *.elf
 *.bin
 *.img
+*.vmdk
 
-# 调试日志
+# 调试
 qemu.log
+qemu-dbg.log
 
 # 编辑器
 .vscode/
 *.swp
+*~
 
 # OS
 .DS_Store

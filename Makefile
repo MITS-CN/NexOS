@@ -19,7 +19,7 @@ OBJS = build/serial.o \
        build/thread.o build/sched.o build/switch.o \
        build/timer.o build/ipc.o build/kbd.o \
        build/syscall.o build/usermode.o \
-       build/elf_loader.o build/init_elf.o
+       build/elf_loader.o
 
 # ============================================================
 # 默认目标：生成 ISO + 磁盘镜像
@@ -79,9 +79,6 @@ build/user_main.o: user/main.c | build
 build/init.elf: build/user_start.o build/user_main.o user/user.ld
 	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/user_main.o
 
-build/init_elf.o: kernel/init_elf.S build/init.elf | build
-	$(CC) $(CFLAGS) -c $< -o $@
-
 # ============================================================
 # 内核 ELF
 # ============================================================
@@ -124,21 +121,33 @@ build/NexOS-NEXT.iso: build/NexOS-NEXT.elf grub.cfg
 # ============================================================
 # 磁盘镜像（自写引导器启动）
 # ============================================================
-$(IMAGE_DIR)/disk.img: build/stage1.bin build/stage2.bin build/kernel_payload.bin | $(IMAGE_DIR)
+$(IMAGE_DIR)/disk.img: build/stage1.bin build/stage2.bin build/kernel_payload.bin $(NXFS_IMG) | $(IMAGE_DIR)
 	@if [ ! -f $@ ]; then \
+	    echo "==> creating $@ (64MB)"; \
 	    dd if=/dev/zero of=$@ bs=1M count=64 status=none; \
-	    echo "==> created $@ (64MB)"; \
+	    dd if=build/stage1.bin of=$@ bs=512 seek=0   conv=notrunc status=none; \
+	    dd if=build/stage2.bin of=$@ bs=512 seek=1   conv=notrunc status=none; \
+	    dd if=build/kernel_payload.bin of=$@ bs=512 seek=17 conv=notrunc status=none; \
+	    dd if=$(NXFS_IMG) of=$@ bs=512 seek=2048 conv=notrunc status=none; \
+	    echo "==> disk.img created with boot + NXFS"; \
+	else \
+	    dd if=build/stage1.bin of=$@ bs=512 seek=0   conv=notrunc status=none; \
+	    dd if=build/stage2.bin of=$@ bs=512 seek=1   conv=notrunc status=none; \
+	    dd if=build/kernel_payload.bin of=$@ bs=512 seek=17 conv=notrunc status=none; \
+	    echo "==> boot area updated (NXFS preserved)"; \
 	fi
-	dd if=build/stage1.bin of=$@ bs=512 seek=0   conv=notrunc status=none
-	dd if=build/stage2.bin of=$@ bs=512 seek=1   conv=notrunc status=none
-	dd if=build/kernel_payload.bin of=$@ bs=512 seek=17 conv=notrunc status=none
-	@echo "==> updated boot area (NXFS preserved)"
 
 $(IMAGE_DIR)/disk2.img: | $(IMAGE_DIR)
 	@if [ ! -f $@ ]; then \
 	    dd if=/dev/zero of=$@ bs=1M count=16 status=none; \
 	    echo "==> created $@"; \
 	fi
+
+# NXFS 分区镜像（含 init.elf）
+NXFS_IMG = build/nxfs.img
+
+$(NXFS_IMG): build/init.elf tools/mknxfs | build
+	./tools/mknxfs $@ build/init.elf:init.elf
 
 # ============================================================
 # 清理
