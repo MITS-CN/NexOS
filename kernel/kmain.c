@@ -151,10 +151,10 @@ void kmain(uint32_t magic, uint32_t mbi) {
 
     if (magic == MULTIBOOT_BOOTLOADER_MAGIC) {
         vga_puts("[INFO] booted via Multiboot (GRUB/ISO)\n");
-        install_set_installer_mode(1);    /* ★ 安装器模式 */
+        install_set_installer_mode(1);    /* 安装器模式 */
     } else {
         vga_puts("[INFO] booted via stage2 (disk)\n");
-        install_set_installer_mode(0);    /* ★ 已安装系统 */
+        install_set_installer_mode(0);    /* 已安装系统 */
     }
 
     pmm_init();         vga_puts("[OK] PMM\n");

@@ -3,9 +3,9 @@ bits 16
 
 KERNEL_HDR_LBA   equ 17
 KERNEL_DATA_LBA  equ 18
-KERNEL_HDR_ADDR  equ 0x0500       ; ★ 从 0x7A00 改到 0x0500，远离栈
-CHUNK_SECTORS    equ 64           ; ★ 从 120 改到 64，32KB/段，所有 BIOS 都支持
-CHUNK_STRIDE     equ 0x800        ; ★ (64*512)/16 = 0x800
+KERNEL_HDR_ADDR  equ 0x0500       ; 从 0x7A00 改到 0x0500，远离栈
+CHUNK_SECTORS    equ 64           ; 从 120 改到 64，32KB/段，所有 BIOS 都支持
+CHUNK_STRIDE     equ 0x800        ; (64*512)/16 = 0x800
 MAX_CHUNKS       equ 64           ; 2MB 上限
 
 db 'SXN2'
@@ -70,7 +70,7 @@ start:
     int 0x13
     jc error
 
-    add bx, CHUNK_STRIDE                  ; ★ 用宏，不是硬编码
+    add bx, CHUNK_STRIDE                  ; 用宏，不是硬编码
     add dword [dap_lba], CHUNK_SECTORS
 
     mov al, '.'

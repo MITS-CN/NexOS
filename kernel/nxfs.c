@@ -1,6 +1,6 @@
 ﻿#include "nxfs.h"
 #include "ata.h"
-#include "block_cache.h"   /* ★ 加这行 */
+#include "block_cache.h"   /* 加这行 */
 #include "heap.h"
 
 /* 超级块 */
@@ -402,7 +402,7 @@ static vfs_node_t *nxfs_create(vfs_node_t *parent, const char *name, int type) {
 static int nxfs_unlink(vfs_node_t *node) {
     if (!node || !node->parent) return -1;
 
-    /* ★ 目录是否为空：查磁盘，不查内存 */
+    /* 目录是否为空：查磁盘，不查内存 */
     if (node->type == VFS_DIR) {
         nxfs_dirent_t ent;
         if (dir_find_entry(node->disk_block, 0, &ent) == 0)

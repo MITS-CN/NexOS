@@ -36,6 +36,15 @@ static int take_word(const char *src, char *out, int out_size) {
     return i;
 }
 
+/* ★ S1：打印 4 位十六进制（无前缀） */
+static void print_hex16(uint16_t v) {
+    const char *h = "0123456789ABCDEF";
+    putc_(h[(v >> 12) & 0xF]);
+    putc_(h[(v >>  8) & 0xF]);
+    putc_(h[(v >>  4) & 0xF]);
+    putc_(h[ v        & 0xF]);
+}
+
 static void resolve_path(const char *in, char *out, int out_size) {
     char tmp[MAX_PATH];
 
@@ -108,6 +117,7 @@ static void cmd_help(void) {
     puts_("  install [0|1]   - install system to disk (0=master, 1=slave)\n");
     puts_("  exec <path>     - load and run ELF\n");
     puts_("  mkpart N T S C  - create partition N: type T, start LBA S, sectors C\n");
+    puts_("  ioperm          - S1 test: request VGA I/O port 0x3D4/0x3D5\n");
 }
 
 static void cmd_pwd(void) {
@@ -233,7 +243,6 @@ static void cmd_write(const char *args) {
 static int do_rm_recursive(const char *path) {
     int fd = sys_open(path, 0);
     if (fd < 0) {
-        /* 不是目录，直接 unlink */
         return sys_unlink(path);
     }
     sys_close(fd);
@@ -246,11 +255,10 @@ static int do_rm_recursive(const char *path) {
         int  type = 0;
         if (sys_readdir(fd, i, name, &type) < 0) {
             sys_close(fd);
-            break;   /* 没有更多项 */
+            break;
         }
         sys_close(fd);
 
-        /* 拼接子路径 */
         char child[MAX_PATH];
         int j = 0;
         while (path[j] && j < MAX_PATH - 1) { child[j] = path[j]; j++; }
@@ -260,13 +268,10 @@ static int do_rm_recursive(const char *path) {
         child[j] = 0;
 
         if (do_rm_recursive(child) < 0) {
-            /* 删不掉这个子项，跳过它继续下一个 */
             i++;
         }
-        /* 删成功的话，i 不变——下一项的索引就是 i */
     }
 
-    /* 目录空了，删掉自己 */
     return sys_unlink(path);
 }
 
@@ -288,11 +293,9 @@ static void cmd_rm(const char *args) {
     const char *p = args;
     int recursive = 0;
 
-    /* 检查 -r 或 -rf 标志 */
     if (p[0] == '-' && p[1] == 'r') {
         recursive = 1;
         p += 2;
-        /* 也接受 -rf */
         if (*p == 'f') p++;
         while (*p == ' ') p++;
     }
@@ -340,7 +343,7 @@ static void cmd_cp(const char *args) {
     int sfd = sys_open(src, 0);
     if (sfd < 0) { puts_("cp: cannot open source\n"); return; }
 
-    int dfd = sys_open(dst, 0x0100 | 0x0200);   /* O_CREAT | O_TRUNC */
+    int dfd = sys_open(dst, 0x0100 | 0x0200);
     if (dfd < 0) {
         puts_("cp: cannot create dest\n");
         sys_close(sfd);
@@ -471,7 +474,8 @@ static void cmd_mkpart(const char *args) {
     puts_(" index="); putc_('0' + index);
     puts_(" type=0x");
     const char *h = "0123456789ABCDEF";
-    putc_(h[(type >> 4) & 0xF]); putc_(h[type & 0xF]);
+    putc_(h[(type >> 4) & 0xF]);
+    putc_(h[type & 0xF]);
     puts_("\n");
 
     if (sys_part_mkp(drive, index, type, start, sectors) < 0)
@@ -524,7 +528,6 @@ static void cmd_exec(const char *args) {
 
     int tid = sys_exec(path);
 
-    /* 成功的话 sys_exec 不会返回——本进程阻塞等新进程退出 */
     if (tid < 0) {
         puts_("exec: failed, code=");
         char b[4] = { '0' + ((-tid) % 10), '\n', 0, 0 };
@@ -532,7 +535,6 @@ static void cmd_exec(const char *args) {
         return;
     }
 
-    /* 新进程退出后到这里 */
     puts_("exec: child exited, tid=");
     char b[4] = { '0' + (tid % 10), '\n', 0, 0 };
     puts_(b);
@@ -546,13 +548,74 @@ static void cmd_mem(void) {
     while (free) { b[i++] = '0' + (free % 10); free /= 10; }
     while (i--) putc_(b[i]);
     puts_(" (");
-    /* 简单乘以 4 显示 KB */
     int kb = sys_meminfo() * 4;
     i = 0;
     if (kb == 0) b[i++] = '0';
     while (kb) { b[i++] = '0' + (kb % 10); kb /= 10; }
     while (i--) putc_(b[i]);
     puts_(" KB)\n");
+}
+
+/* ★ S1：请求端口 + 真的 inb/outb 操作 VGA CRTC 光标 */
+static void cmd_ioperm(void) {
+    puts_("ioperm: request 0x3D4 ... ");
+    int r1 = sys_io_perm(0x3D4);
+    if (r1 == 0) puts_("OK\n");
+    else {
+        puts_("FAIL r=");
+        putc_('0' + ((-r1) % 10));
+        putc_('\n');
+        return;
+    }
+
+    puts_("ioperm: request 0x3D5 ... ");
+    int r2 = sys_io_perm(0x3D5);
+    if (r2 == 0) puts_("OK\n");
+    else {
+        puts_("FAIL r=");
+        putc_('0' + ((-r2) % 10));
+        putc_('\n');
+        return;
+    }
+
+    puts_("ioperm: request 0x60  ... ");
+    int r3 = sys_io_perm(0x60);
+    if (r3 == 0) puts_("OK (unexpected!)\n");
+    else {
+        puts_("rejected r=");
+        putc_('0' + ((-r3) % 10));
+        putc_('\n');
+    }
+
+    /* 读当前 CRTC 光标位置 */
+    outb(0x3D4, 0x0F);
+    uint8_t hi = inb(0x3D5);
+    outb(0x3D4, 0x0E);
+    uint8_t lo = inb(0x3D5);
+    uint16_t orig = ((uint16_t)hi << 8) | lo;
+
+    puts_("ioperm: CRTC cursor read  = 0x");
+    print_hex16(orig);
+    putc_('\n');
+
+    /* 写 (0,0) */
+    outb(0x3D4, 0x0F); outb(0x3D5, 0x00);
+    outb(0x3D4, 0x0E); outb(0x3D5, 0x00);
+
+    /* 读回验证 */
+    outb(0x3D4, 0x0F);
+    uint8_t vhi = inb(0x3D5);
+    outb(0x3D4, 0x0E);
+    uint8_t vlo = inb(0x3D5);
+    uint16_t verify = ((uint16_t)vhi << 8) | vlo;
+
+    /* 恢复原值 */
+    outb(0x3D4, 0x0F); outb(0x3D5, hi);
+    outb(0x3D4, 0x0E); outb(0x3D5, lo);
+
+    puts_("ioperm: write 0x0000, read back = 0x");
+    print_hex16(verify);
+    puts_(verify == 0 ? "  OK\n" : "  FAIL\n");
 }
 
 static void run_cmd(void) {
@@ -589,6 +652,7 @@ static void run_cmd(void) {
     else if (str_prefix(p, "part ")) cmd_part(p + 5);
     else if (str_prefix(p, "mkpart ")) cmd_mkpart(p + 7);
     else if (str_eq(p, "mem")) cmd_mem();
+    else if (str_eq(p, "ioperm")) cmd_ioperm();
     else { puts_("unknown: "); puts_(p); putc_('\n'); }
 
     cmd_len = 0;

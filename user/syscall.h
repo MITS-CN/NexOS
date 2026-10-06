@@ -1,7 +1,17 @@
 ﻿#ifndef USER_SYSCALL_H
 #define USER_SYSCALL_H
 
-#include <stdint.h>   /* ★ 加这行 */
+#include <stdint.h>   /* 加这行 */
+
+/* S2：用户态端口 I/O 内联（需要先 sys_io_perm 开放） */
+static inline void outb(uint16_t port, uint8_t val) {
+    __asm__ volatile("outb %0, %1" :: "a"(val), "Nd"(port));
+}
+static inline uint8_t inb(uint16_t port) {
+    uint8_t v;
+    __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
 
 static inline int sys_print(const char *s) {
     int r;
@@ -158,6 +168,16 @@ static inline int sys_install(int drive) {
     __asm__ volatile("int $0x80"
         : "=a"(r)
         : "0"(21), "b"(drive)
+        : "ecx", "edx", "esi", "edi", "memory");
+    return r;
+}
+
+/* S2 新增：请求开放用户态 I/O 端口 */
+static inline int sys_io_perm(int port) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(22), "b"(port)
         : "ecx", "edx", "esi", "edi", "memory");
     return r;
 }

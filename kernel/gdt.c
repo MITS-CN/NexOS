@@ -26,7 +26,7 @@ struct tss_entry {
     uint32_t ldt;
     uint16_t trap;
     uint16_t iomap_base;
-    uint8_t  iomap[IOMAP_SIZE];   /* ★ 新增 */
+    uint8_t  iomap[IOMAP_SIZE];   /* 新增 */
 } __attribute__((packed));
 
 struct gdt_ptr {
@@ -62,17 +62,17 @@ void gdt_init(void) {
     gdt_set(2, 0, 0xFFFFF,    0x92, 0xCF);
     gdt_set(3, 0, 0xFFFFF,    0xFA, 0xCF);
     gdt_set(4, 0, 0xFFFFF,    0xF2, 0xCF);
-    /* ★ limit 改为含 iomap 的完整 TSS 大小 - 1 */
+    /* limit 改为含 iomap 的完整 TSS 大小 - 1 */
     gdt_set(5, (uint32_t)&tss, sizeof(tss) - 1, 0x89, 0x00);
 
     uint8_t *p = (uint8_t *)&tss;
     for (uint32_t i = 0; i < sizeof(tss); i++) p[i] = 0;
     tss.ss0 = 0x10;
 
-    /* ★ iomap 默认全 1：所有端口对用户态禁止 */
+    /* iomap 默认全 1：所有端口对用户态禁止 */
     for (uint32_t i = 0; i < IOMAP_SIZE; i++) tss.iomap[i] = 0xFF;
 
-    /* ★ iomap_base 指向 iomap 数组在 TSS 内的偏移 */
+    /* iomap_base 指向 iomap 数组在 TSS 内的偏移 */
     tss.iomap_base = (uint16_t)((uint32_t)&tss.iomap - (uint32_t)&tss);
 
     probe[0] = 0x0F41;        /* 'A' — 到达 gdt_flush 前 */

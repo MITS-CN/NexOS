@@ -32,7 +32,7 @@ uint32_t nxfs_read_chain(uint32_t start, uint32_t offset,
 uint32_t nxfs_write_chain(uint32_t start, uint32_t offset,
                           const uint8_t *buf, uint32_t len);
 
-/* ★ 新增 */
+/* 新增 */
 int nxfs_sync_dirent(vfs_node_t *node);   /* 把 node->size/first_block 写回目录项 */
 int nxfs_commit(void);                    /* 刷 FAT + 块缓存到磁盘 */
 

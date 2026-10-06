@@ -12,6 +12,7 @@
 #include "paging.h"
 #include "pmm.h"
 #include "install.h"
+#include "gdt.h"          /* S2: tss_allow_io_port */
 #include <stdint.h>
 
 #define SYS_PRINT    1
@@ -35,6 +36,7 @@
 #define SYS_YIELD   19
 #define SYS_MEMINFO 20
 #define SYS_INSTALL 21
+#define SYS_IO_PERM 22       /* S1 新增 */
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -150,7 +152,7 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
                     sched_yield();
                     continue;
                 }
-                if (!owner) kbd_set_owner(current_thread);   /* ★ 这行 */
+                if (!owner) kbd_set_owner(current_thread);   /* 这行 */
 
                 int ch = kbd_getchar();
                 if (ch >= 0) return ch;
@@ -172,6 +174,20 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
 
         case SYS_INSTALL:
             return install_to_drive((int)a);
+
+        /* S1 新增：请求开放用户态 I/O 端口 */
+        case SYS_IO_PERM: {
+            /* 只允许用户线程调用 */
+            if (!current_thread || !current_thread->is_user) return -1;
+
+            uint16_t port = (uint16_t)(a & 0xFFFF);
+
+            /* 白名单：目前只放行 VGA CRTC 的索引/数据端口 */
+            if (port != 0x3D4 && port != 0x3D5) return -2;
+
+            tss_allow_io_port(port);
+            return 0;
+        }
 
         case SYS_SEND: {
             int tid = (int)a;

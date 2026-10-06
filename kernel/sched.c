@@ -68,7 +68,7 @@ static void do_switch(int old_idx, int new_idx) {
 
     current_thread = nxt;
 
-    /* ★ 切页目录 */
+    /* 切页目录 */
     if (nxt->page_dir && nxt->page_dir != paging_get_dir())
         paging_switch_dir(nxt->page_dir);
 
@@ -123,7 +123,7 @@ void sched_start(void) {
                  : current_thread->stack_base;
     if (ks) gdt_set_kernel_stack((uint32_t)ks + STACK_SIZE);
 
-    /* ★ 首次切换前切页目录 */
+    /* 首次切换前切页目录 */
     if (current_thread->page_dir &&
         current_thread->page_dir != paging_get_dir())
         paging_switch_dir(current_thread->page_dir);
