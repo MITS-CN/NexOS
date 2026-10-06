@@ -25,6 +25,10 @@ void paging_init(void) {
 
     current_dir = kernel_dir;
     paging_load_dir((uint32_t)kernel_dir);
+
+    /* S3: 把物理 0xB8000 重映射到 USER_VGA_BASE，
+       让初始 shell（也跑在 kernel_dir 上）能直接写显存 */
+    paging_map_in(kernel_dir, USER_VGA_BASE, 0xB8000, PAGE_RW | PAGE_USER);
 }
 
 uint32_t *paging_get_dir(void)    { return current_dir; }
@@ -47,6 +51,10 @@ uint32_t *paging_create_dir(void) {
             new_dir[i] = pde;              /* 内核空间：共享 */
         }
     }
+
+    /* S3: 每个新进程的页目录也要能看到 VGA */
+    paging_map_in(new_dir, USER_VGA_BASE, 0xB8000, PAGE_RW | PAGE_USER);
+
     return new_dir;
 }
 
@@ -94,7 +102,10 @@ void paging_free_dir(uint32_t *dir) {
         for (int j = 0; j < 1024; j++) {
             uint32_t pte = pt[j];
             if (pte & PAGE_PRESENT) {
-                pmm_free_page((void *)(pte & ~0xFFF));
+                uint32_t pa = pte & ~0xFFF;
+                /* ★ S2: VGA 文本显存是内核共享的，不能当进程页释放 */
+                if (pa == 0xB8000) continue;
+                pmm_free_page((void *)pa);
             }
         }
         pmm_free_page(pt);

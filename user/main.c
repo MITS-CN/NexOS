@@ -1,8 +1,11 @@
 ﻿#include "syscall.h"
-#include <stdint.h>   /* ★ 加这行 */
+#include <stdint.h>   /* 加这行 */
 
 #define MAX_PATH 256
 #define MAX_NAME 64
+
+/* 用户态可见的 VGA 文本显存虚拟地址（和 kernel/paging.h 一致） */
+#define USER_VGA_BASE 0x10000000u
 
 static char cmd[128];
 static int  cmd_len = 0;
@@ -36,7 +39,7 @@ static int take_word(const char *src, char *out, int out_size) {
     return i;
 }
 
-/* ★ S1：打印 4 位十六进制（无前缀） */
+/* 打印 4 位十六进制（无前缀） */
 static void print_hex16(uint16_t v) {
     const char *h = "0123456789ABCDEF";
     putc_(h[(v >> 12) & 0xF]);
@@ -118,6 +121,7 @@ static void cmd_help(void) {
     puts_("  exec <path>     - load and run ELF\n");
     puts_("  mkpart N T S C  - create partition N: type T, start LBA S, sectors C\n");
     puts_("  ioperm          - S1 test: request VGA I/O port 0x3D4/0x3D5\n");
+    puts_("  vgatest         - S2 test: read/write VGA MMIO from user mode\n");  /* ★ S2 */
 }
 
 static void cmd_pwd(void) {
@@ -556,7 +560,7 @@ static void cmd_mem(void) {
     puts_(" KB)\n");
 }
 
-/* ★ S1：请求端口 + 真的 inb/outb 操作 VGA CRTC 光标 */
+/* 请求端口 + 真的 inb/outb 操作 VGA CRTC 光标 */
 static void cmd_ioperm(void) {
     puts_("ioperm: request 0x3D4 ... ");
     int r1 = sys_io_perm(0x3D4);
@@ -587,7 +591,6 @@ static void cmd_ioperm(void) {
         putc_('\n');
     }
 
-    /* 读当前 CRTC 光标位置 */
     outb(0x3D4, 0x0F);
     uint8_t hi = inb(0x3D5);
     outb(0x3D4, 0x0E);
@@ -598,24 +601,52 @@ static void cmd_ioperm(void) {
     print_hex16(orig);
     putc_('\n');
 
-    /* 写 (0,0) */
     outb(0x3D4, 0x0F); outb(0x3D5, 0x00);
     outb(0x3D4, 0x0E); outb(0x3D5, 0x00);
 
-    /* 读回验证 */
     outb(0x3D4, 0x0F);
     uint8_t vhi = inb(0x3D5);
     outb(0x3D4, 0x0E);
     uint8_t vlo = inb(0x3D5);
     uint16_t verify = ((uint16_t)vhi << 8) | vlo;
 
-    /* 恢复原值 */
     outb(0x3D4, 0x0F); outb(0x3D5, hi);
     outb(0x3D4, 0x0E); outb(0x3D5, lo);
 
     puts_("ioperm: write 0x0000, read back = 0x");
     print_hex16(verify);
     puts_(verify == 0 ? "  OK\n" : "  FAIL\n");
+}
+
+/* S3：用户态直接读写 VGA MMIO（物理 0xB8000 映射到 USER_VGA_BASE） */
+static void cmd_vgatest(void) {
+    volatile uint16_t *vga = (volatile uint16_t *)USER_VGA_BASE;
+
+    /* 1. 读位置 0 原值 */
+    uint16_t orig = vga[0];
+    puts_("vgatest: [0xB8000] orig       = 0x");
+    print_hex16(orig);
+    putc_('\n');
+
+    /* 2. 写字符 'X'，属性 0x07（灰底黑字） */
+    uint16_t mark = (uint16_t)((0x07 << 8) | 'X');
+    vga[0] = mark;
+
+    /* 3. 读回验证 */
+    uint16_t after = vga[0];
+    puts_("vgatest: write 'X', read back = 0x");
+    print_hex16(after);
+    putc_('\n');
+
+    /* 4. 恢复原值 */
+    vga[0] = orig;
+
+    /* 5. 判定 */
+    if (after == mark) {
+        puts_("vgatest: OK - user mode can R/W VGA MMIO\n");
+    } else {
+        puts_("vgatest: FAIL - read back mismatch\n");
+    }
 }
 
 static void run_cmd(void) {
@@ -653,6 +684,7 @@ static void run_cmd(void) {
     else if (str_prefix(p, "mkpart ")) cmd_mkpart(p + 7);
     else if (str_eq(p, "mem")) cmd_mem();
     else if (str_eq(p, "ioperm")) cmd_ioperm();
+    else if (str_eq(p, "vgatest")) cmd_vgatest();   /* ★ S2 */
     else { puts_("unknown: "); puts_(p); putc_('\n'); }
 
     cmd_len = 0;
