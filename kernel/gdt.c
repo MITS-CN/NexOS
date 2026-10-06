@@ -11,6 +11,10 @@ struct gdt_entry {
     uint8_t  base_high;
 } __attribute__((packed));
 
+/* I/O 位图：8192 字节 = 65536 位，覆盖全部 16 位端口
+   位 = 1 表示禁止用户态访问，位 = 0 表示允许 */
+#define IOMAP_SIZE 8192
+
 struct tss_entry {
     uint32_t prev_tss;
     uint32_t esp0, ss0;
@@ -22,6 +26,7 @@ struct tss_entry {
     uint32_t ldt;
     uint16_t trap;
     uint16_t iomap_base;
+    uint8_t  iomap[IOMAP_SIZE];   /* ★ 新增 */
 } __attribute__((packed));
 
 struct gdt_ptr {
@@ -57,12 +62,18 @@ void gdt_init(void) {
     gdt_set(2, 0, 0xFFFFF,    0x92, 0xCF);
     gdt_set(3, 0, 0xFFFFF,    0xFA, 0xCF);
     gdt_set(4, 0, 0xFFFFF,    0xF2, 0xCF);
-    gdt_set(5, (uint32_t)&tss, sizeof(tss)-1, 0x89, 0x00);
+    /* ★ limit 改为含 iomap 的完整 TSS 大小 - 1 */
+    gdt_set(5, (uint32_t)&tss, sizeof(tss) - 1, 0x89, 0x00);
 
     uint8_t *p = (uint8_t *)&tss;
     for (uint32_t i = 0; i < sizeof(tss); i++) p[i] = 0;
     tss.ss0 = 0x10;
-    tss.iomap_base = sizeof(tss);
+
+    /* ★ iomap 默认全 1：所有端口对用户态禁止 */
+    for (uint32_t i = 0; i < IOMAP_SIZE; i++) tss.iomap[i] = 0xFF;
+
+    /* ★ iomap_base 指向 iomap 数组在 TSS 内的偏移 */
+    tss.iomap_base = (uint16_t)((uint32_t)&tss.iomap - (uint32_t)&tss);
 
     probe[0] = 0x0F41;        /* 'A' — 到达 gdt_flush 前 */
 
@@ -77,4 +88,20 @@ void gdt_init(void) {
 
 void gdt_set_kernel_stack(uint32_t esp0) {
     tss.esp0 = esp0;
+}
+
+/* 允许用户态访问某个端口（位图对应位清 0） */
+void tss_allow_io_port(uint16_t port) {
+    uint32_t byte_idx = port >> 3;
+    uint32_t bit_idx  = port & 7;
+    if (byte_idx >= IOMAP_SIZE) return;
+    tss.iomap[byte_idx] &= (uint8_t)~(1u << bit_idx);
+}
+
+/* 禁止用户态访问某个端口（位图对应位置 1） */
+void tss_deny_io_port(uint16_t port) {
+    uint32_t byte_idx = port >> 3;
+    uint32_t bit_idx  = port & 7;
+    if (byte_idx >= IOMAP_SIZE) return;
+    tss.iomap[byte_idx] |= (uint8_t)(1u << bit_idx);
 }
