@@ -1,6 +1,7 @@
 ﻿#include "sched.h"
 #include "paging.h"
 #include "heap.h"
+#include "irq.h"      /* ★ S3 */
 
 extern void gdt_set_kernel_stack(uint32_t esp0);
 
@@ -37,6 +38,9 @@ static void reclaim_dead_threads(void) {
     while (i < thread_count) {
         thread_t *t = threads[i];
         if (t->state == THREAD_DEAD && t != current_thread) {
+            /* ★ S3: 释放该线程持有的所有 IRQ */
+            irq_release_all(t->id);
+
             /* 从调度数组移除 */
             for (int j = i; j < thread_count - 1; j++)
                 threads[j] = threads[j + 1];

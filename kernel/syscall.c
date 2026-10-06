@@ -12,7 +12,8 @@
 #include "paging.h"
 #include "pmm.h"
 #include "install.h"
-#include "gdt.h"          /* S2: tss_allow_io_port */
+#include "gdt.h"          /* ★ S1: tss_allow_io_port */
+#include "irq.h"          /* ★ S3: irq_register/unregister */
 #include <stdint.h>
 
 #define SYS_PRINT    1
@@ -36,7 +37,10 @@
 #define SYS_YIELD   19
 #define SYS_MEMINFO 20
 #define SYS_INSTALL 21
-#define SYS_IO_PERM 22       /* S1 新增 */
+#define SYS_IO_PERM 22       /* ★ S1 */
+#define SYS_IRQ_REGISTER   23  /* ★ S3 */
+#define SYS_IRQ_UNREGISTER 24  /* ★ S3 */
+#define SYS_EXEC_BG        25  /* ★ S4: 后台 exec */
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -152,7 +156,7 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
                     sched_yield();
                     continue;
                 }
-                if (!owner) kbd_set_owner(current_thread);   /* 这行 */
+                if (!owner) kbd_set_owner(current_thread);   /* ★ 这行 */
 
                 int ch = kbd_getchar();
                 if (ch >= 0) return ch;
@@ -175,18 +179,28 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
         case SYS_INSTALL:
             return install_to_drive((int)a);
 
-        /* S1 新增：请求开放用户态 I/O 端口 */
+        /* ★ S1: 请求开放用户态 I/O 端口 */
         case SYS_IO_PERM: {
-            /* 只允许用户线程调用 */
             if (!current_thread || !current_thread->is_user) return -1;
-
             uint16_t port = (uint16_t)(a & 0xFFFF);
-
-            /* 白名单：目前只放行 VGA CRTC 的索引/数据端口 */
             if (port != 0x3D4 && port != 0x3D5) return -2;
-
             tss_allow_io_port(port);
             return 0;
+        }
+
+        /* ★ S3: 注册 IRQ 独占 */
+        case SYS_IRQ_REGISTER: {
+            if (!current_thread || !current_thread->is_user) return -1;
+            int irq = (int)a;
+            if (irq == 0) return -2;   /* IRQ0 时钟保留给内核 */
+            return irq_register(irq, current_thread->id);
+        }
+
+        /* ★ S3: 解绑 IRQ */
+        case SYS_IRQ_UNREGISTER: {
+            if (!current_thread || !current_thread->is_user) return -1;
+            int irq = (int)a;
+            return irq_unregister(irq, current_thread->id);
         }
 
         case SYS_SEND: {
@@ -214,26 +228,20 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
         case SYS_FG: {
             thread_t *t = 0;
 
-            /* 通过 id 找 thread */
-
             extern thread_t *sched_find(int tid);
             t = sched_find((int)a);
             if (!t) return -1;
             kbd_set_owner(t);
-
-            /* 唤醒新前台（如果它阻塞） */
 
             if (t->state == THREAD_BLOCKED) t->state = THREAD_READY;
             return 0;
         }
 
         case SYS_PART_LIST: {
-            /* a = drive, b = 用户缓冲区（4 * 16 字节） */
             if (!user_range_ok(b, 4 * 16)) return -1;
             partition_t table[4];
             if (part_read_table((int)a, table) < 0) return -1;
 
-            /* 打包成 4*16 字节发给用户 */
             uint8_t *out = (uint8_t *)b;
             for (int i = 0; i < 4; i++) {
                 uint8_t *p = out + i * 16;
@@ -300,18 +308,53 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             thread_t *t = thread_create_elf(elf.entry, elf.stack_top, dir);
             if (!t) return -8;
 
-            /* 记录链：新线程的 prev_owner 是当前 owner */
             t->prev_owner = kbd_get_owner();
             if (!t->prev_owner) t->prev_owner = current_thread;
 
-            /* 键盘交给新线程 */
             kbd_set_owner(t);
 
-            /* 当前线程阻塞，等新线程退出 */
             current_thread->state = THREAD_BLOCKED;
             sched_yield();
 
-            /* 被唤醒后（新线程 exit）继续执行，返回 tid */
+            return t->id;
+        }
+
+        /* ★ S4: 后台 exec —— 加载 ELF、创建线程，但不阻塞当前线程 */
+        case SYS_EXEC_BG: {
+            if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
+
+            char kpath[MAX_PATH];
+            const char *upath = (const char *)a;
+            int i = 0;
+            while (upath[i] && i < MAX_PATH - 1) { kpath[i] = upath[i]; i++; }
+            kpath[i] = 0;
+
+            int fd = vfs_open(kpath, 0);
+            if (fd < 0) return -2;
+
+            uint32_t sz = vfs_fd_size(fd);
+            if (sz == 0 || sz > 512 * 1024) { vfs_close(fd); return -3; }
+
+            uint8_t *buf = (uint8_t *)kmalloc(sz);
+            if (!buf) { vfs_close(fd); return -4; }
+
+            int rd = vfs_fd_read(fd, buf, sz);
+            vfs_close(fd);
+            if (rd != (int)sz) { kfree(buf); return -5; }
+
+            uint32_t *dir = paging_create_dir();
+            if (!dir) { kfree(buf); return -6; }
+
+            elf_load_result_t elf;
+            int r = elf_load_to_dir(dir, buf, sz, &elf);
+            kfree(buf);
+            if (r != 0) return -7;
+
+            thread_t *t = thread_create_elf(elf.entry, elf.stack_top, dir);
+            if (!t) return -8;
+
+            /* ★ S4: 不设置 prev_owner，不抢键盘 owner，不阻塞。
+               kbd.elf 是独立服务进程。 */
             return t->id;
         }
 

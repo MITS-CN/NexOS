@@ -1,10 +1,10 @@
 ﻿#include "syscall.h"
-#include <stdint.h>   /* 加这行 */
+#include <stdint.h>   /* ★ 加这行 */
 
 #define MAX_PATH 256
 #define MAX_NAME 64
 
-/* 用户态可见的 VGA 文本显存虚拟地址（和 kernel/paging.h 一致） */
+/* ★ S2: 用户态可见的 VGA 文本显存虚拟地址（和 kernel/paging.h 一致） */
 #define USER_VGA_BASE 0x10000000u
 
 static char cmd[128];
@@ -39,7 +39,7 @@ static int take_word(const char *src, char *out, int out_size) {
     return i;
 }
 
-/* 打印 4 位十六进制（无前缀） */
+/* ★ S1：打印 4 位十六进制（无前缀） */
 static void print_hex16(uint16_t v) {
     const char *h = "0123456789ABCDEF";
     putc_(h[(v >> 12) & 0xF]);
@@ -121,7 +121,8 @@ static void cmd_help(void) {
     puts_("  exec <path>     - load and run ELF\n");
     puts_("  mkpart N T S C  - create partition N: type T, start LBA S, sectors C\n");
     puts_("  ioperm          - S1 test: request VGA I/O port 0x3D4/0x3D5\n");
-    puts_("  vgatest         - S2 test: read/write VGA MMIO from user mode\n");  /* ★ S2 */
+    puts_("  vgatest         - S2 test: read/write VGA MMIO from user mode\n");
+    puts_("  irqtest         - S3 test: claim IRQ1 (will fail if kbd.elf holds it)\n");
 }
 
 static void cmd_pwd(void) {
@@ -560,7 +561,7 @@ static void cmd_mem(void) {
     puts_(" KB)\n");
 }
 
-/* 请求端口 + 真的 inb/outb 操作 VGA CRTC 光标 */
+/* ★ S1：请求端口 + 真的 inb/outb 操作 VGA CRTC 光标 */
 static void cmd_ioperm(void) {
     puts_("ioperm: request 0x3D4 ... ");
     int r1 = sys_io_perm(0x3D4);
@@ -618,34 +619,76 @@ static void cmd_ioperm(void) {
     puts_(verify == 0 ? "  OK\n" : "  FAIL\n");
 }
 
-/* S3：用户态直接读写 VGA MMIO（物理 0xB8000 映射到 USER_VGA_BASE） */
+/* ★ S2：用户态直接读写 VGA MMIO（物理 0xB8000 映射到 USER_VGA_BASE） */
 static void cmd_vgatest(void) {
     volatile uint16_t *vga = (volatile uint16_t *)USER_VGA_BASE;
 
-    /* 1. 读位置 0 原值 */
     uint16_t orig = vga[0];
     puts_("vgatest: [0xB8000] orig       = 0x");
     print_hex16(orig);
     putc_('\n');
 
-    /* 2. 写字符 'X'，属性 0x07（灰底黑字） */
     uint16_t mark = (uint16_t)((0x07 << 8) | 'X');
     vga[0] = mark;
 
-    /* 3. 读回验证 */
     uint16_t after = vga[0];
     puts_("vgatest: write 'X', read back = 0x");
     print_hex16(after);
     putc_('\n');
 
-    /* 4. 恢复原值 */
     vga[0] = orig;
 
-    /* 5. 判定 */
     if (after == mark) {
         puts_("vgatest: OK - user mode can R/W VGA MMIO\n");
     } else {
         puts_("vgatest: FAIL - read back mismatch\n");
+    }
+}
+
+/* ★ S3：尝试独占 IRQ1（现在 kbd.elf 已经占了，预期会失败 -3） */
+static void cmd_irqtest(void) {
+    puts_("irqtest: trying to register IRQ1...\n");
+    int r = sys_irq_register(1);
+    if (r < 0) {
+        if (r == -3) {
+            puts_("irqtest: FAIL - IRQ1 already owned by kbd.elf (expected in S4)\n");
+        } else {
+            puts_("irqtest: FAIL r=");
+            putc_('0' + ((-r) % 10));
+            putc_('\n');
+        }
+        return;
+    }
+
+    puts_("irqtest: OK (kbd.elf NOT running?). Now press keys. ESC to quit.\n");
+
+    user_msg_t m;
+    for (;;) {
+        int rr = sys_recv(&m);
+        if (rr < 0) break;
+        if (m.type != MSG_IRQ) continue;
+        if ((int)m.data[0] != 1) continue;
+
+        uint32_t sc = m.data[1];
+        puts_("IRQ1: scancode=0x");
+        const char *h = "0123456789ABCDEF";
+        putc_(h[(sc >> 4) & 0xF]);
+        putc_(h[ sc       & 0xF]);
+        putc_('\n');
+
+        if (sc == 0x01) break;
+    }
+
+    sys_irq_unregister(1);
+    puts_("irqtest: unregistered.\n");
+}
+
+/* ★ S4：从 kbd.elf 收字符（阻塞） */
+static int read_char(void) {
+    user_msg_t m;
+    for (;;) {
+        if (sys_recv(&m) < 0) continue;
+        if (m.type == MSG_CHAR) return (int)m.data[0];
     }
 }
 
@@ -684,7 +727,8 @@ static void run_cmd(void) {
     else if (str_prefix(p, "mkpart ")) cmd_mkpart(p + 7);
     else if (str_eq(p, "mem")) cmd_mem();
     else if (str_eq(p, "ioperm")) cmd_ioperm();
-    else if (str_eq(p, "vgatest")) cmd_vgatest();   /* ★ S2 */
+    else if (str_eq(p, "vgatest")) cmd_vgatest();
+    else if (str_eq(p, "irqtest")) cmd_irqtest();
     else { puts_("unknown: "); puts_(p); putc_('\n'); }
 
     cmd_len = 0;
@@ -692,6 +736,28 @@ static void run_cmd(void) {
 
 int main(void) {
     puts_("NexOS-NEXT Shell v0.5\n");
+
+    /* ★ S4: 启动用户态键盘驱动 */
+    puts_("Starting keyboard driver (/kbd.elf)...\n");
+    int kbd_tid = sys_exec_bg("/kbd.elf");
+    if (kbd_tid < 0) {
+        puts_("shell: FATAL - cannot start kbd.elf, code=");
+        char b[4] = { '0' + ((-kbd_tid) % 10), '\n', 0, 0 };
+        puts_(b);
+        for (;;) sys_yield();
+    }
+
+    /* 告诉 kbd.elf：我是你的输出目标 */
+    user_msg_t hello;
+    hello.sender  = 0;
+    hello.type    = MSG_HELLO;
+    for (int i = 0; i < 8; i++) hello.data[i] = 0;
+    sys_send(kbd_tid, &hello);
+
+    puts_("Keyboard driver running (tid=");
+    char b[4] = { '0' + (kbd_tid % 10), ')', '\n', '\0' };
+    puts_(b);
+
     puts_("Type 'help' for commands.\n\n");
 
     for (;;) {
@@ -700,7 +766,7 @@ int main(void) {
         cmd_len = 0;
 
         for (;;) {
-            int c = sys_getchar();
+            int c = read_char();
 
             if (c == '\n') {
                 run_cmd();

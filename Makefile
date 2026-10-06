@@ -19,7 +19,7 @@ OBJS = build/serial.o \
        build/heap.o build/vfs.o build/ramfs.o \
        build/ata.o build/nxfs.o build/block_cache.o build/part.o \
        build/thread.o build/sched.o build/switch.o \
-       build/timer.o build/ipc.o build/kbd.o \
+       build/timer.o build/ipc.o build/irq.o build/kbd.o \
        build/syscall.o build/usermode.o \
        build/elf_loader.o
 
@@ -80,6 +80,13 @@ build/user_main.o: user/main.c | build
 
 build/init.elf: build/user_start.o build/user_main.o user/user.ld
 	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/user_main.o
+
+# ★ S4: 键盘驱动进程
+build/kbd_main.o: user/kbd.c | build
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+build/kbd.elf: build/user_start.o build/kbd_main.o user/user.ld
+	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/kbd_main.o
 
 # ============================================================
 # 内核 ELF
@@ -147,8 +154,9 @@ $(IMAGE_DIR)/disk2.img: | $(IMAGE_DIR)
 tools/mknxfs: tools/mknxfs.c
 	$(CC) -O2 -o $@ $<
 
-$(NXFS_IMG): build/init.elf tools/mknxfs | build
-	./tools/mknxfs $@ build/init.elf:init.elf
+# ★ S4: 把 kbd.elf 也打进 NXFS
+$(NXFS_IMG): build/init.elf build/kbd.elf tools/mknxfs | build
+	./tools/mknxfs $@ build/init.elf:init.elf build/kbd.elf:kbd.elf
 
 # ============================================================
 # 清理

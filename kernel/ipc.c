@@ -42,9 +42,10 @@ void ipc_recv(message_t *out) {
             return;
         }
 
-        /* 队列空，阻塞并让出 CPU */
+        /* 队列空：标记阻塞，开中断并休眠，等中断唤醒
+           ★ S4 修正：原来是 sched_yield()，单线程场景下会死循环，
+              且 syscall 上下文 cli 关中断，IRQ 进不来 */
         current_thread->state = THREAD_BLOCKED;
-        sched_yield();
-        /* 被唤醒后从这里继续，重新检查队列 */
+        __asm__ volatile("sti; hlt");
     }
 }

@@ -2,6 +2,7 @@
 #include "io.h"
 #include "timer.h"
 #include "kbd.h"
+#include "irq.h"      /* ★ S4 */
 
 static const char *exception_names[] = {
     "Divide by zero", "Debug", "NMI", "Breakpoint",
@@ -60,9 +61,30 @@ void irq_handler(struct regs *r) {
     if (r->int_no >= 40) outb(0xA0, 0x20);
     outb(0x20, 0x20);
 
-    if (r->int_no == 32) {
+    int irq_no = (int)(r->int_no - 32);
+    if (irq_no < 0 || irq_no >= IRQ_MAX) return;
+
+    /* ★ S4: IRQ0 时钟永远内核处理，不允许用户独占 */
+    if (irq_no == 0) {
         timer_tick();
-    } else if (r->int_no == 33) {
+        return;
+    }
+
+    /* ★ S4: 如果被用户线程独占，转发 IPC，不执行内核默认处理 */
+    int owner = irq_owner(irq_no);
+    if (owner >= 0) {
+        uint32_t scancode = 0;
+        if (irq_no == 1) {
+            /* 键盘：必须在中断里立刻读走，避免下次按键覆盖 8042 输出缓冲 */
+            scancode = (uint32_t)inb(0x60);
+        }
+        irq_dispatch(irq_no, scancode);
+        return;
+    }
+
+    /* 默认处理 */
+    if (irq_no == 1) {
         kbd_irq();
     }
+    /* 其他 IRQ 目前不处理 */
 }
