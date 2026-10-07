@@ -3,18 +3,20 @@
 
 #include <stdint.h>
 
+/* ★ ABI 约定：这些值和 kernel/thread.h 里必须一致（两边不能 include 同一头） */
+#define MSG_IRQ            0x100
+#define MSG_IRQ_OWNER_DIED 0x101
+#define MSG_HELLO          0x200
+#define MSG_CHAR           0x201
+#define MSG_EXIT           0x202
+#define MSG_VGA_CHAR       0x300   /* ★ S5 */
+#define MSG_VGA_OWNER_DIED 0x301   /* ★ S5 */
+
 typedef struct {
     int      sender;
     int      type;
     uint32_t data[8];
 } user_msg_t;
-
-/* ★ S4: 键盘驱动 IPC 协议 */
-#define MSG_IRQ            0x100   /* 内核 → IRQ owner */
-#define MSG_IRQ_OWNER_DIED 0x101   /* ★ S4.6.2: 内核 → 父进程（IRQ owner 死） */
-#define MSG_HELLO          0x200   /* shell → kbd */
-#define MSG_CHAR           0x201   /* kbd → shell */
-#define MSG_EXIT           0x202   /* ★ S4.6.2: shell → kbd（让 kbd 自杀） */
 
 #define IRQ_NO_READ  0xFFFFu
 
@@ -237,6 +239,26 @@ static inline int sys_exec_bg(const char *path) {
         : "=a"(r)
         : "0"(25), "b"(path)
         : "ecx", "edx", "esi", "edi", "memory");
+    return r;
+}
+
+/* ★ S5: 申请接管 VGA */
+static inline int sys_vga_claim(void) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(26)
+        : "ebx", "ecx", "edx", "esi", "edi", "memory");
+    return r;
+}
+
+/* ★ S5: 拿内核当前 cursor（启动时对齐） */
+static inline int sys_vga_get_cursor(void) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(27)
+        : "ebx", "ecx", "edx", "esi", "edi", "memory");
     return r;
 }
 

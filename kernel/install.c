@@ -11,7 +11,7 @@ extern char _kernel_raw_end[];
 #define NXFS_PART_LBA       2048
 #define NXFS_BLOCK_SECTORS  8
 #define NXFS_BLOCK_SIZE     (NXFS_BLOCK_SECTORS * 512)
-#define NXFS_DIRENT_SIZE    36   /* name[24] + type[1] + rsvd[3] + size[4] + first[4] */
+#define NXFS_DIRENT_SIZE    36
 
 static int installer_mode = 0;
 
@@ -22,14 +22,12 @@ static uint32_t raw_kernel_size(void) {
     return (uint32_t)(_kernel_raw_end - _kernel_start);
 }
 
-/* 1. stage1 → LBA 0 */
 static int write_stage1(int drv) {
     uint32_t sz = (uint32_t)(stage1_data_end - stage1_data_start);
     if (sz != 512) return -1;
     return ata_write_sectors_ex(drv, 0, 1, stage1_data_start);
 }
 
-/* 2. stage2 → LBA 1（16 扇区） */
 static int write_stage2(int drv) {
     uint32_t sz = (uint32_t)(stage2_data_end - stage2_data_start);
     if (sz > 16 * 512) return -1;
@@ -41,7 +39,6 @@ static int write_stage2(int drv) {
     return ata_write_sectors_ex(drv, 1, 16, buf);
 }
 
-/* 3. kernel payload（512B 头 + raw kernel）→ LBA 17 */
 static int write_kernel(int drv) {
     uint32_t ksize = raw_kernel_size();
 
@@ -70,9 +67,6 @@ static int write_kernel(int drv) {
     return 0;
 }
 
-/* ---- 目录项辅助 ---- */
-
-/* 一个目录项 36 字节：name[24] type[1] rsvd[3] size[4] first_block[4] */
 static void set_dirent(uint8_t *block, int slot,
                        const char *name, int type,
                        uint32_t size, uint32_t first_block) {
@@ -80,7 +74,7 @@ static void set_dirent(uint8_t *block, int slot,
     for (int i = 0; i < NXFS_DIRENT_SIZE; i++) e[i] = 0;
     int i = 0;
     while (name[i] && i < 23) { e[i] = (uint8_t)name[i]; i++; }
-    e[24] = (uint8_t)type;      /* 1 = file, 2 = dir */
+    e[24] = (uint8_t)type;
     e[28] =  size        & 0xFF;
     e[29] = (size >> 8)  & 0xFF;
     e[30] = (size >> 16) & 0xFF;
@@ -91,51 +85,45 @@ static void set_dirent(uint8_t *block, int slot,
     e[35] = (first_block >> 24) & 0xFF;
 }
 
-/* 写一个 4KB 块到 NXFS 数据区 */
 static int write_data_block(int drv, uint32_t block, const uint8_t *data) {
     uint32_t lba = NXFS_PART_LBA + 66 + block * NXFS_BLOCK_SECTORS;
     return ata_write_sectors_ex(drv, lba, NXFS_BLOCK_SECTORS, data);
 }
 
-/* 4. NXFS 区（含 /system/init/init.elf 和 /system/drive/kbd.elf） */
 static int write_nxfs(int drv) {
     uint32_t init_size = g_init_elf_size;
     uint32_t kbd_size  = g_kbd_elf_size;
+    uint32_t vga_size  = g_vga_elf_size;
     if (!g_init_elf_data || init_size == 0) return -1;
     if (!g_kbd_elf_data  || kbd_size  == 0) return -1;
+    if (!g_vga_elf_data  || vga_size  == 0) return -1;
 
-    /* 块布局：
-       0 = 根目录
-       1 = /system 目录
-       2 = /system/init 目录
-       3 = /system/drive 目录
-       4 .. 4+init_blocks-1   = init.elf 数据
-       ...                    = kbd.elf 数据
-    */
     uint32_t init_blocks = (init_size + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
     uint32_t kbd_blocks  = (kbd_size  + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
+    uint32_t vga_blocks  = (vga_size  + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
 
     uint32_t init_first = 4;
     uint32_t kbd_first  = init_first + init_blocks;
-    uint32_t total_used = kbd_first + kbd_blocks;
+    uint32_t vga_first  = kbd_first + kbd_blocks;
+    uint32_t total_used = vga_first + vga_blocks;
 
-    if (total_used > 128) return -1;   /* FAT 一扇区只装 128 项 */
+    if (total_used > 128) return -1;
 
     /* 4a. 超级块 */
     uint8_t sb[512];
     for (int i = 0; i < 512; i++) sb[i] = 0;
     uint32_t *s = (uint32_t *)sb;
-    s[0] = 0x5346584E;   /* magic */
-    s[1] = 1;            /* version */
-    s[2] = 8;            /* block_sectors */
-    s[3] = 8192;         /* total_blocks */
-    s[4] = 2;            /* fat_lba */
-    s[5] = 64;           /* fat_sectors */
-    s[6] = 66;           /* data_lba */
-    s[7] = 0;            /* root_block */
+    s[0] = 0x5346584E;
+    s[1] = 1;
+    s[2] = 8;
+    s[3] = 8192;
+    s[4] = 2;
+    s[5] = 64;
+    s[6] = 66;
+    s[7] = 0;
     if (ata_write_sectors_ex(drv, NXFS_PART_LBA + 1, 1, sb) < 0) return -1;
 
-    /* 4b. FAT 全清零 */
+    /* 4b. FAT 清零 */
     uint8_t zero512[512];
     for (int i = 0; i < 512; i++) zero512[i] = 0;
     for (uint32_t i = 0; i < 64; i++) {
@@ -143,24 +131,24 @@ static int write_nxfs(int drv) {
             return -1;
     }
 
-    /* 4c. FAT 第一扇区填 [0, total_used) */
+    /* 4c. FAT 第一扇区 */
     uint8_t fat_sec[512];
     for (int i = 0; i < 512; i++) fat_sec[i] = 0;
     uint32_t *t32 = (uint32_t *)fat_sec;
 
-    /* 目录块 0..3：EOF */
     for (int i = 0; i < 4; i++) t32[i] = 0xFFFFFFFFu;
 
-    /* init.elf 数据链 */
     for (uint32_t i = 0; i < init_blocks; i++) {
         uint32_t b = init_first + i;
         t32[b] = (i == init_blocks - 1) ? 0xFFFFFFFFu : (b + 1);
     }
-
-    /* kbd.elf 数据链 */
     for (uint32_t i = 0; i < kbd_blocks; i++) {
         uint32_t b = kbd_first + i;
         t32[b] = (i == kbd_blocks - 1) ? 0xFFFFFFFFu : (b + 1);
+    }
+    for (uint32_t i = 0; i < vga_blocks; i++) {
+        uint32_t b = vga_first + i;
+        t32[b] = (i == vga_blocks - 1) ? 0xFFFFFFFFu : (b + 1);
     }
 
     if (ata_write_sectors_ex(drv, NXFS_PART_LBA + 2, 1, fat_sec) < 0)
@@ -169,33 +157,29 @@ static int write_nxfs(int drv) {
     /* 4d. 目录块 */
     uint8_t blk[NXFS_BLOCK_SIZE];
 
-    /* 块 0：根目录，含 system/ */
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
     set_dirent(blk, 0, "system", 2, 0, 1);
     if (write_data_block(drv, 0, blk) < 0) return -1;
 
-    /* 块 1：/system，含 init/ 和 drive/ */
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
     set_dirent(blk, 0, "init",  2, 0, 2);
     set_dirent(blk, 1, "drive", 2, 0, 3);
     if (write_data_block(drv, 1, blk) < 0) return -1;
 
-    /* 块 2：/system/init，含 init.elf */
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
     set_dirent(blk, 0, "init.elf", 1, init_size, init_first);
     if (write_data_block(drv, 2, blk) < 0) return -1;
 
-    /* 块 3：/system/drive，含 kbd.elf */
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
     set_dirent(blk, 0, "kbd.elf", 1, kbd_size, kbd_first);
+    set_dirent(blk, 1, "vga.elf", 1, vga_size, vga_first);
     if (write_data_block(drv, 3, blk) < 0) return -1;
 
-    /* 4e. init.elf 数据 */
+    /* 4e. init.elf */
     {
         const uint8_t *p = g_init_elf_data;
         uint32_t remaining = init_size;
         uint32_t blk_no = init_first;
-
         while (remaining > 0) {
             uint32_t take = remaining > NXFS_BLOCK_SIZE
                           ? NXFS_BLOCK_SIZE : remaining;
@@ -208,12 +192,28 @@ static int write_nxfs(int drv) {
         }
     }
 
-    /* 4f. kbd.elf 数据 */
+    /* 4f. kbd.elf */
     {
         const uint8_t *p = g_kbd_elf_data;
         uint32_t remaining = kbd_size;
         uint32_t blk_no = kbd_first;
+        while (remaining > 0) {
+            uint32_t take = remaining > NXFS_BLOCK_SIZE
+                          ? NXFS_BLOCK_SIZE : remaining;
+            for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
+            for (uint32_t i = 0; i < take; i++) blk[i] = p[i];
+            if (write_data_block(drv, blk_no, blk) < 0) return -1;
+            p += take;
+            remaining -= take;
+            blk_no++;
+        }
+    }
 
+    /* 4g. vga.elf */
+    {
+        const uint8_t *p = g_vga_elf_data;
+        uint32_t remaining = vga_size;
+        uint32_t blk_no = vga_first;
         while (remaining > 0) {
             uint32_t take = remaining > NXFS_BLOCK_SIZE
                           ? NXFS_BLOCK_SIZE : remaining;
@@ -230,11 +230,10 @@ static int write_nxfs(int drv) {
 }
 
 int install_to_drive(int drive) {
-    if (!installer_mode) {
-        return -100;   /* 不是安装器模式 */
-    }
+    if (!installer_mode) return -100;
     if (!g_init_elf_data || g_init_elf_size == 0) return -1;
     if (!g_kbd_elf_data  || g_kbd_elf_size  == 0) return -1;
+    if (!g_vga_elf_data  || g_vga_elf_size  == 0) return -1;
 
     if (write_stage1(drive) < 0) return -2;
     if (write_stage2(drive) < 0) return -3;

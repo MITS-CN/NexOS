@@ -15,6 +15,12 @@
 #include "irq.h"
 #include <stdint.h>
 
+/* ★ S5: kmain.c 里的 VGA 接口 */
+extern int  vga_get_owner(void);
+extern void vga_set_owner(int tid);
+extern void vga_clear_owner(void);
+extern int  vga_get_cursor(void);
+
 #define SYS_PRINT    1
 #define SYS_EXIT     2
 #define SYS_SEND     3
@@ -40,6 +46,8 @@
 #define SYS_IRQ_REGISTER   23
 #define SYS_IRQ_UNREGISTER 24
 #define SYS_EXEC_BG        25
+#define SYS_VGA_CLAIM      26   /* ★ S5 */
+#define SYS_VGA_GET_CURSOR 27   /* ★ S5 */
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -116,7 +124,8 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return vfs_unlink((const char *)a);
         }
 
-        /* ★ S4.6.2: 退出时通知父进程（如果自己是 IRQ owner） */
+        /* ★ S4.6.2: IRQ owner 死亡通知
+           ★ S5:     VGA owner 死亡通知 */
         case SYS_EXIT: {
             uint32_t *kdir = paging_kernel_dir();
             if (current_thread->page_dir &&
@@ -128,17 +137,28 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
 
             thread_t *prev = current_thread->prev_owner;
 
+            /* --- IRQ owner 死亡 --- */
             int dying_irq = irq_find_by_owner(current_thread->id);
             if (dying_irq >= 0) {
-                /* 先释放，让新进程能立即注册 */
                 irq_release_all(current_thread->id);
-
                 if (prev) {
                     message_t m;
                     m.sender  = -1;
                     m.type    = MSG_IRQ_OWNER_DIED;
                     m.data[0] = (uint32_t)dying_irq;
                     for (int i = 1; i < 8; i++) m.data[i] = 0;
+                    ipc_send(prev->id, &m);
+                }
+            }
+
+            /* --- ★ S5: VGA owner 死亡 --- */
+            if (vga_get_owner() == current_thread->id) {
+                vga_clear_owner();   /* 内核从硬件 CRTC 同步 cursor */
+                if (prev) {
+                    message_t m;
+                    m.sender  = -1;
+                    m.type    = MSG_VGA_OWNER_DIED;
+                    for (int i = 0; i < 8; i++) m.data[i] = 0;
                     ipc_send(prev->id, &m);
                 }
             }
@@ -190,6 +210,18 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             int irq = (int)a;
             return irq_unregister(irq, current_thread->id);
         }
+
+        /* ★ S5: VGA 接管 */
+        case SYS_VGA_CLAIM: {
+            if (!current_thread || !current_thread->is_user) return -1;
+            if (vga_get_owner() >= 0) return -2;   /* 已被别人占 */
+            vga_set_owner(current_thread->id);
+            return 0;
+        }
+
+        /* ★ S5: 拿当前 cursor（vga.elf 启动时对齐） */
+        case SYS_VGA_GET_CURSOR:
+            return vga_get_cursor();
 
         case SYS_SEND: {
             int tid = (int)a;
@@ -300,7 +332,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return t->id;
         }
 
-        /* ★ S4.6.2: 设置 prev_owner，让子进程死时能通知父进程 */
         case SYS_EXEC_BG: {
             if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
 
@@ -334,7 +365,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             thread_t *t = thread_create_elf(elf.entry, elf.stack_top, dir);
             if (!t) return -8;
 
-            /* ★ S4.6.2: 记录父进程（用于 IRQ owner 死亡通知） */
             t->prev_owner = current_thread;
 
             return t->id;

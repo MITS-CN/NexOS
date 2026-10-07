@@ -23,14 +23,8 @@ OBJS = build/serial.o \
        build/syscall.o build/usermode.o \
        build/elf_loader.o
 
-# ============================================================
-# 默认目标：生成 ISO + 磁盘镜像
-# ============================================================
 all: build/NexOS-NEXT.iso $(IMAGE_DIR)/disk.img
 
-# ============================================================
-# 运行
-# ============================================================
 run: $(IMAGE_DIR)/disk.img $(IMAGE_DIR)/disk2.img
 	@-pkill -x qemu-system-i386 2>/dev/null
 	@sleep 1
@@ -48,18 +42,12 @@ run-iso: build/NexOS-NEXT.iso $(IMAGE_DIR)/disk.img $(IMAGE_DIR)/disk2.img
 	    -drive file=$(IMAGE_DIR)/disk2.img,format=raw,if=ide,index=1 \
 	    -m 128M
 
-# ============================================================
-# 目录
-# ============================================================
 build:
 	mkdir -p build
 
 $(IMAGE_DIR):
 	mkdir -p $(IMAGE_DIR)
 
-# ============================================================
-# 编译规则
-# ============================================================
 build/%.o: kernel/%.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -87,15 +75,19 @@ build/kbd_main.o: user/kbd.c | build
 build/kbd.elf: build/user_start.o build/kbd_main.o user/user.ld
 	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/kbd_main.o
 
+# ★ S5
+build/vga_main.o: user/vga.c | build
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+build/vga.elf: build/user_start.o build/vga_main.o user/user.ld
+	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/vga_main.o
+
 # ============================================================
 # 内核 ELF
 # ============================================================
 build/NexOS-NEXT.elf: $(OBJS) linker.ld
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lgcc
 
-# ============================================================
-# 内核 raw binary（给自写引导器用）
-# ============================================================
 build/kernel.bin: build/NexOS-NEXT.elf
 	objcopy -O binary -R .multiboot -R .bss -R .comment -R .note $< $@
 
@@ -108,29 +100,21 @@ tools/mkkernel: tools/mkkernel.c
 build/install_stage.o: kernel/install_stage.S build/stage1.bin build/stage2.bin | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# ============================================================
-# 引导器
-# ============================================================
 build/stage1.bin: boot/stage1.asm | build
 	nasm -f bin -o $@ $<
 
 build/stage2.bin: boot/stage2.asm | build
 	nasm -f bin -o $@ $<
 
-# ============================================================
-# ISO（GRUB 启动）
-# ============================================================
-build/NexOS-NEXT.iso: build/NexOS-NEXT.elf build/init.elf build/kbd.elf grub.cfg
+build/NexOS-NEXT.iso: build/NexOS-NEXT.elf build/init.elf build/kbd.elf build/vga.elf grub.cfg
 	mkdir -p build/iso/boot/grub
 	cp build/NexOS-NEXT.elf build/iso/boot/
 	cp build/init.elf       build/iso/boot/
 	cp build/kbd.elf        build/iso/boot/
+	cp build/vga.elf        build/iso/boot/
 	cp grub.cfg build/iso/boot/grub/
 	grub-mkrescue -o $@ build/iso
 
-# ============================================================
-# 磁盘镜像（自写引导器启动）
-# ============================================================
 $(IMAGE_DIR)/disk.img: build/stage1.bin build/stage2.bin build/kernel_payload.bin $(NXFS_IMG) | $(IMAGE_DIR)
 	@if [ ! -f $@ ]; then \
 	    echo "==> creating $@ (64MB)"; \
@@ -148,20 +132,16 @@ $(IMAGE_DIR)/disk2.img: | $(IMAGE_DIR)
 	    echo "==> created $@"; \
 	fi
 
-#TOOLS
-
 tools/mknxfs: tools/mknxfs.c
 	$(CC) -O2 -o $@ $<
 
-# ★ S4.5: 多级路径
-$(NXFS_IMG): build/init.elf build/kbd.elf tools/mknxfs | build
+# ★ S5: 三个 ELF
+$(NXFS_IMG): build/init.elf build/kbd.elf build/vga.elf tools/mknxfs | build
 	./tools/mknxfs $@ \
 	    build/init.elf:system/init/init.elf \
-	    build/kbd.elf:system/drive/kbd.elf
+	    build/kbd.elf:system/drive/kbd.elf \
+	    build/vga.elf:system/drive/vga.elf
 
-# ============================================================
-# 清理
-# ============================================================
 clean:
 	rm -rf build
 

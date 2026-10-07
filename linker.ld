@@ -11,7 +11,7 @@ SECTIONS {
     .rodata : { *(.rodata) }
     .data   : { *(.data) }
 
-    _kernel_raw_end = .;          /* 加这行 */
+    _kernel_raw_end = .;
 
     . = 0x800000;
 

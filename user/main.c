@@ -11,8 +11,9 @@ static int  cmd_len = 0;
 static char cat_buf[256];
 static char cwd[MAX_PATH] = "/";
 
-/* ★ S4.6.2: kbd.elf 全局 tid，用于重启和 killkbd */
+/* ★ S4.6.2 / S5: 驱动全局 tid */
 static int  g_kbd_tid = -1;
+static int  g_vga_tid = -1;
 
 static void putc_(char c) { sys_putchar(c); }
 static void puts_(const char *s) { while (*s) putc_(*s++); }
@@ -128,6 +129,24 @@ static void restart_kbd(void) {
     putc_('\n');
 }
 
+/* ★ S5: 启动 / 重启 vga.elf */
+static void restart_vga(void) {
+    g_vga_tid = sys_exec_bg("/system/drive/vga.elf");
+    if (g_vga_tid < 0) {
+        puts_("[shell] restart vga.elf FAILED, code=");
+        print_dec(-g_vga_tid);
+        putc_('\n');
+        return;
+    }
+
+    /* vga.elf 不需要 HELLO（内核直接把它作为 vga owner 发字符），
+       这里只打印一条 log */
+
+    puts_("[shell] vga.elf started, tid=");
+    print_dec(g_vga_tid);
+    putc_('\n');
+}
+
 static void cmd_help(void) {
     puts_("Commands:\n");
     puts_("  help            - show this\n");
@@ -153,8 +172,10 @@ static void cmd_help(void) {
     puts_("  ioperm          - S1 test: request VGA I/O port 0x3D4/0x3D5\n");
     puts_("  vgatest         - S2 test: read/write VGA MMIO from user mode\n");
     puts_("  irqtest         - S3 test: claim IRQ1 (will fail if kbd.elf holds it)\n");
-    puts_("  killkbd         - S4.6.2 test: send MSG_EXIT to kbd.elf, watch it restart\n");
+    puts_("  killkbd         - S4.6.2 test: kill kbd.elf, watch it restart\n");
     puts_("  kbdtid          - show current kbd.elf tid\n");
+    puts_("  killvga         - S5 test: kill vga.elf, watch it restart\n");
+    puts_("  vgatid          - show current vga.elf tid\n");
 }
 
 static void cmd_pwd(void) {
@@ -532,7 +553,7 @@ static void cmd_install(const char *args) {
     puts_("install: target drive ");
     putc_('0' + drive);
     puts_("\n");
-    puts_("install: writing boot + kernel + NXFS + init.elf + kbd.elf...\n");
+    puts_("install: writing boot + kernel + NXFS + init.elf + kbd.elf + vga.elf...\n");
 
     int r = sys_install(drive);
     if (r < 0) {
@@ -712,7 +733,6 @@ static void cmd_irqtest(void) {
     puts_("irqtest: unregistered.\n");
 }
 
-/* ★ S4.6.2: 让 kbd.elf 自杀，观察自动重启 */
 static void cmd_killkbd(void) {
     if (g_kbd_tid < 0) {
         puts_("killkbd: no kbd.elf running\n");
@@ -736,6 +756,30 @@ static void cmd_kbdtid(void) {
     putc_('\n');
 }
 
+/* ★ S5 */
+static void cmd_killvga(void) {
+    if (g_vga_tid < 0) {
+        puts_("killvga: no vga.elf running\n");
+        return;
+    }
+
+    puts_("killvga: sending MSG_EXIT to tid=");
+    print_dec(g_vga_tid);
+    putc_('\n');
+
+    user_msg_t m;
+    m.sender  = 0;
+    m.type    = MSG_EXIT;
+    for (int i = 0; i < 8; i++) m.data[i] = 0;
+    sys_send(g_vga_tid, &m);
+}
+
+static void cmd_vgatid(void) {
+    puts_("vga.elf tid = ");
+    print_dec(g_vga_tid);
+    putc_('\n');
+}
+
 static int read_char(void) {
     user_msg_t m;
     for (;;) {
@@ -743,12 +787,19 @@ static int read_char(void) {
 
         if (m.type == MSG_CHAR) return (int)m.data[0];
 
-        /* ★ S4.6.2: kbd.elf 死了，自动重启 */
         if (m.type == MSG_IRQ_OWNER_DIED &&
             (int)m.data[0] == 1) {
             putc_('\n');
             puts_("[shell] kbd.elf died (IRQ1 released), restarting...\n");
             restart_kbd();
+            continue;
+        }
+
+        /* ★ S5: vga.elf 死，重启 */
+        if (m.type == MSG_VGA_OWNER_DIED) {
+            putc_('\n');
+            puts_("[shell] vga.elf died, restarting...\n");
+            restart_vga();
             continue;
         }
     }
@@ -793,6 +844,8 @@ static void run_cmd(void) {
     else if (str_eq(p, "irqtest")) cmd_irqtest();
     else if (str_eq(p, "killkbd")) cmd_killkbd();
     else if (str_eq(p, "kbdtid")) cmd_kbdtid();
+    else if (str_eq(p, "killvga")) cmd_killvga();
+    else if (str_eq(p, "vgatid")) cmd_vgatid();
     else { puts_("unknown: "); puts_(p); putc_('\n'); }
 
     cmd_len = 0;
@@ -800,6 +853,12 @@ static void run_cmd(void) {
 
 int main(void) {
     puts_("NexOS-NEXT Shell v0.5\n");
+
+    /* ★ S5: 先启动 VGA 驱动，之后所有输出走用户态 */
+    puts_("Starting VGA driver (/system/drive/vga.elf)...\n");
+    restart_vga();
+
+    /* ★ S4.5: 再启动键盘驱动 */
     puts_("Starting keyboard driver (/system/drive/kbd.elf)...\n");
     restart_kbd();
 

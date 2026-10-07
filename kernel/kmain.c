@@ -16,12 +16,18 @@
 #include "ata.h"
 #include "nxfs.h"
 #include "install.h"
+#include "ipc.h"
 
 #define VGA_MEMORY ((volatile uint16_t *)0xB8000)
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
 
 static int cursor = 0;
+
+static int vga_owner_tid = -1;
+static int panic_mode = 0;
+
+void vga_set_panic(int on) { panic_mode = on ? 1 : 0; }
 
 static void vga_move_cursor(void) {
     uint16_t pos = cursor;
@@ -49,8 +55,51 @@ void vga_clear(void) {
     vga_move_cursor();
 }
 
+static uint16_t vga_read_hw_cursor(void) {
+    outb(0x3D4, 0x0F);
+    uint8_t lo = inb(0x3D5);
+    outb(0x3D4, 0x0E);
+    uint8_t hi = inb(0x3D5);
+    return ((uint16_t)hi << 8) | lo;
+}
+
+int vga_get_cursor(void) {
+    return cursor;
+}
+
+void vga_set_owner(int tid) {
+    vga_owner_tid = tid;
+}
+
+void vga_clear_owner(void) {
+    if (vga_owner_tid < 0) return;
+
+    uint16_t hw = vga_read_hw_cursor();
+    if (hw < VGA_WIDTH * VGA_HEIGHT) {
+        cursor = (int)hw;
+    }
+    vga_owner_tid = -1;
+}
+
+int vga_get_owner(void) {
+    return vga_owner_tid;
+}
+
 void vga_putc(char c) {
     serial_putc(c);
+
+    if (panic_mode) {
+        /* fallback */
+    } else if (vga_owner_tid >= 0) {
+        message_t m;
+        m.sender  = -1;
+        m.type    = MSG_VGA_CHAR;
+        m.data[0] = (uint32_t)(uint8_t)c;
+        for (int i = 1; i < 8; i++) m.data[i] = 0;
+        ipc_send(vga_owner_tid, &m);
+        return;
+    }
+
     if (c == '\r') {
         cursor = (cursor / VGA_WIDTH) * VGA_WIDTH;
         vga_move_cursor();
@@ -80,13 +129,78 @@ void vga_hex(uint32_t v) {
     for (int i = 28; i >= 0; i -= 4) vga_putc(h[(v >> i) & 0xF]);
 }
 
+/* ★ VMware DIAG: 检查 8042 是否存在 + 打印状态 */
+static void kbd_8042_init(void) {
+    /* 探测：8042 存在时，状态端口 bit5 (0x20) = 1。
+       若返回 0xFF 或 bit5 = 0，说明没有 PS/2 控制器。 */
+    uint8_t st1 = inb(0x64);
+    uint8_t st2 = inb(0x64);
+
+    vga_puts("  [diag] 0x64 = 0x");
+    const char *h = "0123456789ABCDEF";
+    vga_putc(h[(st1 >> 4) & 0xF]);
+    vga_putc(h[ st1       & 0xF]);
+    vga_putc(' ');
+    vga_putc(h[(st2 >> 4) & 0xF]);
+    vga_putc(h[ st2       & 0xF]);
+
+    if (st1 == 0xFF && st2 == 0xFF) {
+        vga_puts(" -> NO 8042 (USB-only?)\n");
+    } else if (!(st2 & 0x20)) {
+        vga_puts(" -> 8042 present but not self-test OK\n");
+    } else {
+        vga_puts(" -> 8042 present\n");
+    }
+
+    /* 清 output */
+    for (int i = 0; i < 128; i++) {
+        if (!(inb(0x64) & 0x01)) break;
+        inb(0x60);
+    }
+
+    /* 启用端口 1 */
+    for (int i = 0; i < 100000; i++) {
+        if (!(inb(0x64) & 0x02)) break;
+    }
+    outb(0x64, 0xAE);
+    for (volatile int i = 0; i < 10000; i++);
+
+    /* 清 output */
+    for (int i = 0; i < 128; i++) {
+        if (!(inb(0x64) & 0x01)) break;
+        inb(0x60);
+    }
+
+    /* 启用扫描 0xF4 */
+    for (int i = 0; i < 100000; i++) {
+        if (!(inb(0x64) & 0x02)) break;
+    }
+    outb(0x60, 0xF4);
+
+    /* 读 ACK */
+    for (int i = 0; i < 100000; i++) {
+        if (inb(0x64) & 0x01) break;
+    }
+    uint8_t ack = 0;
+    if (inb(0x64) & 0x01) ack = inb(0x60);
+    vga_puts("  [diag] 0xF4 ack = 0x");
+    vga_putc(h[(ack >> 4) & 0xF]);
+    vga_putc(h[ ack       & 0xF]);
+    vga_puts("\n");
+
+    /* 清残留 */
+    for (int i = 0; i < 128; i++) {
+        if (!(inb(0x64) & 0x01)) break;
+        inb(0x60);
+    }
+}
+
 const uint8_t *g_init_elf_data = 0;
 uint32_t       g_init_elf_size = 0;
-/* ★ S4.5: 定义 kbd.elf 数据指针，install.c 会 extern 引用 */
 const uint8_t *g_kbd_elf_data  = 0;
 uint32_t       g_kbd_elf_size  = 0;
-
-/* ---- Multiboot module 查找 ---- */
+const uint8_t *g_vga_elf_data  = 0;
+uint32_t       g_vga_elf_size  = 0;
 
 #define MULTIBOOT_BOOTLOADER_MAGIC  0x2BADB002
 
@@ -128,17 +242,11 @@ static int mb_module_find(uint32_t mbi, const char *name,
     return -1;
 }
 
-/* ★ S4.5-fix: ISO 启动时 NXFS 可能是空盘，
-   把 GRUB module 里的 init.elf / kbd.elf 写一份进 NXFS，
-   这样 shell 里的 sys_exec_bg("/system/drive/kbd.elf") 才能找到。
-   磁盘启动时（NXFS 已有文件），本函数是空操作。 */
 static void materialize_modules_into_nxfs(void) {
-    /* 确保目录存在 */
     if (!vfs_lookup("/system"))       vfs_create("/system",       VFS_DIR);
     if (!vfs_lookup("/system/init"))  vfs_create("/system/init",  VFS_DIR);
     if (!vfs_lookup("/system/drive")) vfs_create("/system/drive", VFS_DIR);
 
-    /* 写 init.elf */
     if (g_init_elf_data && g_init_elf_size > 0) {
         if (!vfs_lookup("/system/init/init.elf")) {
             int fd = vfs_open("/system/init/init.elf", O_CREAT | O_TRUNC);
@@ -146,13 +254,10 @@ static void materialize_modules_into_nxfs(void) {
                 vfs_fd_write(fd, g_init_elf_data, g_init_elf_size);
                 vfs_close(fd);
                 vga_puts("[OK] init.elf written into NXFS\n");
-            } else {
-                vga_puts("[WARN] failed to write init.elf into NXFS\n");
             }
         }
     }
 
-    /* 写 kbd.elf */
     if (g_kbd_elf_data && g_kbd_elf_size > 0) {
         if (!vfs_lookup("/system/drive/kbd.elf")) {
             int fd = vfs_open("/system/drive/kbd.elf", O_CREAT | O_TRUNC);
@@ -160,14 +265,21 @@ static void materialize_modules_into_nxfs(void) {
                 vfs_fd_write(fd, g_kbd_elf_data, g_kbd_elf_size);
                 vfs_close(fd);
                 vga_puts("[OK] kbd.elf written into NXFS\n");
-            } else {
-                vga_puts("[WARN] failed to write kbd.elf into NXFS\n");
+            }
+        }
+    }
+
+    if (g_vga_elf_data && g_vga_elf_size > 0) {
+        if (!vfs_lookup("/system/drive/vga.elf")) {
+            int fd = vfs_open("/system/drive/vga.elf", O_CREAT | O_TRUNC);
+            if (fd >= 0) {
+                vfs_fd_write(fd, g_vga_elf_data, g_vga_elf_size);
+                vfs_close(fd);
+                vga_puts("[OK] vga.elf written into NXFS\n");
             }
         }
     }
 }
-
-/* ---- 内核主函数 ---- */
 
 void kmain(uint32_t magic, uint32_t mbi) {
     serial_init();
@@ -194,6 +306,10 @@ void kmain(uint32_t magic, uint32_t mbi) {
     vfs_init();         vga_puts("[OK] VFS (ramfs)\n");
     thread_init();
     timer_init();       vga_puts("[OK] Timer @100Hz\n");
+
+    kbd_8042_init();
+    vga_puts("[OK] PS/2 8042 init\n");
+
     vga_puts("[OK] Keyboard driver moved to user space (S4.5)\n");
     vga_puts("[OK] Syscalls (int 0x80)\n");
     vga_puts("[OK] User mode (ring 3)\n");
@@ -218,9 +334,6 @@ void kmain(uint32_t magic, uint32_t mbi) {
     vfs_use_nxfs();
     vga_puts("[OK] VFS now on NXFS\n\n");
 
-    /* ============ 获取 init.elf / kbd.elf ============ */
-
-    /* ---- init.elf ---- */
     uint8_t *elf_buf  = 0;
     uint32_t elf_size = 0;
 
@@ -274,7 +387,6 @@ void kmain(uint32_t magic, uint32_t mbi) {
         g_init_elf_size = elf_size;
     }
 
-    /* ---- kbd.elf（仅 GRUB 场景需要，install 时写盘用） ---- */
     if (magic == MULTIBOOT_BOOTLOADER_MAGIC) {
         uint32_t ks = 0, ke = 0;
         if (mb_module_find(mbi, "kbd.elf", &ks, &ke) == 0) {
@@ -286,12 +398,21 @@ void kmain(uint32_t magic, uint32_t mbi) {
                 vga_puts("\n");
             }
         }
+
+        uint32_t vs = 0, ve = 0;
+        if (mb_module_find(mbi, "vga.elf", &vs, &ve) == 0) {
+            if (vs != 0 && ve > vs) {
+                g_vga_elf_data = (const uint8_t *)vs;
+                g_vga_elf_size = ve - vs;
+                vga_puts("[OK] vga.elf from GRUB module, size=");
+                vga_hex(g_vga_elf_size);
+                vga_puts("\n");
+            }
+        }
     }
 
-    /* ★ S4.5-fix: ISO 启动时把两个 ELF 落进 NXFS，供 shell exec 使用 */
     materialize_modules_into_nxfs();
 
-    /* ============ 加载并执行 init.elf ============ */
     elf_load_result_t elf;
     int r = elf_load(elf_buf, elf_size, &elf);
     if (r) {

@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdint.h>
 
+// Tools
+
 int main(int argc, char **argv) {
     if (argc != 3) {
         fprintf(stderr, "usage: %s <input.bin> <output.bin>\n", argv[0]);
