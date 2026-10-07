@@ -1,21 +1,23 @@
 ﻿#ifndef USER_SYSCALL_H
 #define USER_SYSCALL_H
 
-#include <stdint.h>   /* ★ 加这行 */
+#include <stdint.h>
 
-/* ★ S3: 和内核 thread.h 里的 user_msg_t 二进制兼容 */
 typedef struct {
     int      sender;
     int      type;
     uint32_t data[8];
 } user_msg_t;
 
-/* ★ S4: 键盘驱动 IPC 协议（和 kernel/irq.h 的 MSG_IRQ 对应） */
-#define MSG_IRQ   0x100   /* 内核 → kbd：scancode（data[0]=irq, data[1]=sc） */
-#define MSG_HELLO 0x200   /* shell → kbd：我是你的输出目标 */
-#define MSG_CHAR  0x201   /* kbd → shell：一个字符（data[0]=char） */
+/* ★ S4: 键盘驱动 IPC 协议 */
+#define MSG_IRQ            0x100   /* 内核 → IRQ owner */
+#define MSG_IRQ_OWNER_DIED 0x101   /* ★ S4.6.2: 内核 → 父进程（IRQ owner 死） */
+#define MSG_HELLO          0x200   /* shell → kbd */
+#define MSG_CHAR           0x201   /* kbd → shell */
+#define MSG_EXIT           0x202   /* ★ S4.6.2: shell → kbd（让 kbd 自杀） */
 
-/* ★ S1：用户态端口 I/O 内联（需要先 sys_io_perm 开放） */
+#define IRQ_NO_READ  0xFFFFu
+
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile("outb %0, %1" :: "a"(val), "Nd"(port));
 }
@@ -184,7 +186,6 @@ static inline int sys_install(int drive) {
     return r;
 }
 
-/* ★ S1: 请求开放用户态 I/O 端口 */
 static inline int sys_io_perm(int port) {
     int r;
     __asm__ volatile("int $0x80"
@@ -194,17 +195,15 @@ static inline int sys_io_perm(int port) {
     return r;
 }
 
-/* ★ S3: 注册 IRQ 独占 */
-static inline int sys_irq_register(int irq) {
+static inline int sys_irq_register(int irq, uint16_t read_port) {
     int r;
     __asm__ volatile("int $0x80"
         : "=a"(r)
-        : "0"(23), "b"(irq)
-        : "ecx", "edx", "esi", "edi", "memory");
+        : "0"(23), "b"(irq), "c"((int)read_port)
+        : "edx", "esi", "edi", "memory");
     return r;
 }
 
-/* ★ S3: 解绑 IRQ */
 static inline int sys_irq_unregister(int irq) {
     int r;
     __asm__ volatile("int $0x80"
@@ -214,7 +213,6 @@ static inline int sys_irq_unregister(int irq) {
     return r;
 }
 
-/* ★ S3: 阻塞接收 IPC 消息 */
 static inline int sys_recv(user_msg_t *m) {
     int r;
     __asm__ volatile("int $0x80"
@@ -224,7 +222,6 @@ static inline int sys_recv(user_msg_t *m) {
     return r;
 }
 
-/* ★ S4: 发送 IPC 消息 */
 static inline int sys_send(int tid, const user_msg_t *m) {
     int r;
     __asm__ volatile("int $0x80"
@@ -234,7 +231,6 @@ static inline int sys_send(int tid, const user_msg_t *m) {
     return r;
 }
 
-/* ★ S4: 后台 exec —— 加载并运行 ELF，不阻塞当前进程，返回新进程 tid */
 static inline int sys_exec_bg(const char *path) {
     int r;
     __asm__ volatile("int $0x80"

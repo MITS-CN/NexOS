@@ -11,8 +11,8 @@
 #include "paging.h"
 #include "pmm.h"
 #include "install.h"
-#include "gdt.h"          /* ★ S1: tss_allow_io_port */
-#include "irq.h"          /* ★ S3: irq_register/unregister */
+#include "gdt.h"
+#include "irq.h"
 #include <stdint.h>
 
 #define SYS_PRINT    1
@@ -20,7 +20,7 @@
 #define SYS_SEND     3
 #define SYS_RECV     4
 #define SYS_GETID    5
-#define SYS_GETCHAR  6      /* ★ S4.5: 保留编号，case 已删（键盘不再由内核提供） */
+#define SYS_GETCHAR  6
 #define SYS_PUTCHAR  7
 #define SYS_OPEN    8
 #define SYS_CLOSE   9
@@ -39,7 +39,7 @@
 #define SYS_IO_PERM 22
 #define SYS_IRQ_REGISTER   23
 #define SYS_IRQ_UNREGISTER 24
-#define SYS_EXEC_BG        25   /* ★ S4: 后台 exec */
+#define SYS_EXEC_BG        25
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -116,25 +116,37 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return vfs_unlink((const char *)a);
         }
 
+        /* ★ S4.6.2: 退出时通知父进程（如果自己是 IRQ owner） */
         case SYS_EXIT: {
-            /* 1. 切回内核页目录（当前还在用户页目录上） */
             uint32_t *kdir = paging_kernel_dir();
             if (current_thread->page_dir &&
                 current_thread->page_dir != kdir) {
                 paging_switch_dir(kdir);
-
-                /* 2. 释放用户空间 */
                 paging_free_dir(current_thread->page_dir);
                 current_thread->page_dir = 0;
             }
 
-            /* 3. 唤醒父进程（不再涉及键盘 owner） */
             thread_t *prev = current_thread->prev_owner;
+
+            int dying_irq = irq_find_by_owner(current_thread->id);
+            if (dying_irq >= 0) {
+                /* 先释放，让新进程能立即注册 */
+                irq_release_all(current_thread->id);
+
+                if (prev) {
+                    message_t m;
+                    m.sender  = -1;
+                    m.type    = MSG_IRQ_OWNER_DIED;
+                    m.data[0] = (uint32_t)dying_irq;
+                    for (int i = 1; i < 8; i++) m.data[i] = 0;
+                    ipc_send(prev->id, &m);
+                }
+            }
+
             if (prev && prev->state == THREAD_BLOCKED) {
                 prev->state = THREAD_READY;
             }
 
-            /* 4. 标记自己 DEAD */
             current_thread->state = THREAD_DEAD;
             sched_yield();
             return 0;
@@ -142,8 +154,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
 
         case SYS_GETID:
             return current_thread->id;
-
-        /* ★ S4.5: SYS_GETCHAR 已删除。键盘输入通过 IPC 从 kbd.elf 获取。 */
 
         case SYS_YIELD:
             sched_yield();
@@ -170,8 +180,9 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
         case SYS_IRQ_REGISTER: {
             if (!current_thread || !current_thread->is_user) return -1;
             int irq = (int)a;
+            uint16_t read_port = (uint16_t)(b & 0xFFFF);
             if (irq == 0) return -2;
-            return irq_register(irq, current_thread->id);
+            return irq_register(irq, current_thread->id, read_port);
         }
 
         case SYS_IRQ_UNREGISTER: {
@@ -203,7 +214,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
         }
 
         case SYS_FG: {
-            /* ★ S4.5: 只唤醒目标线程，不再操作键盘 owner */
             extern thread_t *sched_find(int tid);
             thread_t *t = sched_find((int)a);
             if (!t) return -1;
@@ -282,7 +292,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             thread_t *t = thread_create_elf(elf.entry, elf.stack_top, dir);
             if (!t) return -8;
 
-            /* ★ S4.5: 记录父进程；不再抢键盘 owner */
             t->prev_owner = current_thread;
 
             current_thread->state = THREAD_BLOCKED;
@@ -291,6 +300,7 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return t->id;
         }
 
+        /* ★ S4.6.2: 设置 prev_owner，让子进程死时能通知父进程 */
         case SYS_EXEC_BG: {
             if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
 
@@ -324,7 +334,9 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             thread_t *t = thread_create_elf(elf.entry, elf.stack_top, dir);
             if (!t) return -8;
 
-            /* 后台：不设 prev_owner，不阻塞 */
+            /* ★ S4.6.2: 记录父进程（用于 IRQ owner 死亡通知） */
+            t->prev_owner = current_thread;
+
             return t->id;
         }
 

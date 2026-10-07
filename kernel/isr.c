@@ -1,7 +1,7 @@
 #include "isr.h"
 #include "io.h"
 #include "timer.h"
-#include "irq.h"      /* ★ S3: IRQ 转发框架（kbd 已从内核移除，S4.5） */
+#include "irq.h"
 
 static const char *exception_names[] = {
     "Divide by zero", "Debug", "NMI", "Breakpoint",
@@ -69,17 +69,13 @@ void irq_handler(struct regs *r) {
         return;
     }
 
-    /* 如果被用户线程独占，转发 IPC，不执行内核默认处理 */
+    /* 如果被用户线程独占，转发 IPC，不执行内核默认处理
+       ★ S4.6: 端口读取由 irq_dispatch 内部按注册配置完成 */
     int owner = irq_owner(irq_no);
     if (owner >= 0) {
-        uint32_t scancode = 0;
-        if (irq_no == 1) {
-            /* 键盘：必须在中断里立刻读走，避免下次按键覆盖 8042 输出缓冲 */
-            scancode = (uint32_t)inb(0x60);
-        }
-        irq_dispatch(irq_no, scancode);
+        irq_dispatch(irq_no);
         return;
     }
 
-    /* 其他 IRQ 目前不处理（kbd 已移到用户态 kbd.elf） */
+    /* 其他 IRQ 目前不处理 */
 }

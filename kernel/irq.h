@@ -4,18 +4,16 @@
 #include <stdint.h>
 #include "thread.h"
 
-#define IRQ_MAX   16
-#define MSG_IRQ   0x100
+#define IRQ_MAX      16
+#define MSG_IRQ            0x100
+#define MSG_IRQ_OWNER_DIED 0x101   /* ★ S4.6.2: 内核通知父进程 IRQ owner 已死 */
+#define IRQ_NO_READ  0xFFFFu
 
-/* 注册：把 irq 绑定到 tid。返回 0 成功，<0 失败 */
-int  irq_register(int irq, int tid);
-/* 解绑：只有 owner 能解 */
+int  irq_register(int irq, int tid, uint16_t read_port);
 int  irq_unregister(int irq, int tid);
-/* 查询当前 owner tid，-1 表示未注册 */
 int  irq_owner(int irq);
-/* 转发一次：把 scancode 通过 IPC 发给 owner */
-void irq_dispatch(int irq, uint32_t scancode);
-/* 线程死亡时清掉它的所有 IRQ 绑定 */
+int  irq_find_by_owner(int tid);   /* ★ S4.6.2: 返回 tid 持有的第一个 IRQ，或 -1 */
+void irq_dispatch(int irq);
 void irq_release_all(int tid);
 
 #endif

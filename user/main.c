@@ -1,16 +1,18 @@
 ﻿#include "syscall.h"
-#include <stdint.h>   /* ★ 加这行 */
+#include <stdint.h>
 
 #define MAX_PATH 256
 #define MAX_NAME 64
 
-/* ★ S2: 用户态可见的 VGA 文本显存虚拟地址（和 kernel/paging.h 一致） */
 #define USER_VGA_BASE 0x10000000u
 
 static char cmd[128];
 static int  cmd_len = 0;
 static char cat_buf[256];
 static char cwd[MAX_PATH] = "/";
+
+/* ★ S4.6.2: kbd.elf 全局 tid，用于重启和 killkbd */
+static int  g_kbd_tid = -1;
 
 static void putc_(char c) { sys_putchar(c); }
 static void puts_(const char *s) { while (*s) putc_(*s++); }
@@ -45,6 +47,14 @@ static void print_hex16(uint16_t v) {
     putc_(h[(v >>  8) & 0xF]);
     putc_(h[(v >>  4) & 0xF]);
     putc_(h[ v        & 0xF]);
+}
+
+static void print_dec(int v) {
+    char b[12]; int i = 0;
+    if (v < 0) { putc_('-'); v = -v; }
+    if (v == 0) b[i++] = '0';
+    while (v) { b[i++] = '0' + (v % 10); v /= 10; }
+    while (i--) putc_(b[i]);
 }
 
 static void resolve_path(const char *in, char *out, int out_size) {
@@ -97,6 +107,27 @@ static void resolve_path(const char *in, char *out, int out_size) {
     out[i] = 0;
 }
 
+/* ★ S4.6.2: 启动 / 重启 kbd.elf */
+static void restart_kbd(void) {
+    g_kbd_tid = sys_exec_bg("/system/drive/kbd.elf");
+    if (g_kbd_tid < 0) {
+        puts_("[shell] restart kbd.elf FAILED, code=");
+        print_dec(-g_kbd_tid);
+        putc_('\n');
+        return;
+    }
+
+    user_msg_t hello;
+    hello.sender  = 0;
+    hello.type    = MSG_HELLO;
+    for (int i = 0; i < 8; i++) hello.data[i] = 0;
+    sys_send(g_kbd_tid, &hello);
+
+    puts_("[shell] kbd.elf started, tid=");
+    print_dec(g_kbd_tid);
+    putc_('\n');
+}
+
 static void cmd_help(void) {
     puts_("Commands:\n");
     puts_("  help            - show this\n");
@@ -122,6 +153,8 @@ static void cmd_help(void) {
     puts_("  ioperm          - S1 test: request VGA I/O port 0x3D4/0x3D5\n");
     puts_("  vgatest         - S2 test: read/write VGA MMIO from user mode\n");
     puts_("  irqtest         - S3 test: claim IRQ1 (will fail if kbd.elf holds it)\n");
+    puts_("  killkbd         - S4.6.2 test: send MSG_EXIT to kbd.elf, watch it restart\n");
+    puts_("  kbdtid          - show current kbd.elf tid\n");
 }
 
 static void cmd_pwd(void) {
@@ -318,6 +351,7 @@ static void cmd_rm(const char *args) {
         if (sys_unlink(path) < 0) puts_("rm: failed (dir not empty?)\n");
     }
 }
+
 static void cmd_cp(const char *args) {
     if (!args || !*args) { puts_("cp: missing args\n"); return; }
 
@@ -643,7 +677,7 @@ static void cmd_vgatest(void) {
 
 static void cmd_irqtest(void) {
     puts_("irqtest: trying to register IRQ1...\n");
-    int r = sys_irq_register(1);
+    int r = sys_irq_register(1, 0x60);
     if (r < 0) {
         if (r == -3) {
             puts_("irqtest: FAIL - IRQ1 already owned by kbd.elf (expected in S4)\n");
@@ -655,7 +689,7 @@ static void cmd_irqtest(void) {
         return;
     }
 
-    puts_("irqtest: OK (kbd.elf NOT running?). Now press keys. ESC to quit.\n");
+    puts_("irqtest: OK. Now press keys. ESC to quit.\n");
 
     user_msg_t m;
     for (;;) {
@@ -678,11 +712,45 @@ static void cmd_irqtest(void) {
     puts_("irqtest: unregistered.\n");
 }
 
+/* ★ S4.6.2: 让 kbd.elf 自杀，观察自动重启 */
+static void cmd_killkbd(void) {
+    if (g_kbd_tid < 0) {
+        puts_("killkbd: no kbd.elf running\n");
+        return;
+    }
+
+    puts_("killkbd: sending MSG_EXIT to tid=");
+    print_dec(g_kbd_tid);
+    putc_('\n');
+
+    user_msg_t m;
+    m.sender  = 0;
+    m.type    = MSG_EXIT;
+    for (int i = 0; i < 8; i++) m.data[i] = 0;
+    sys_send(g_kbd_tid, &m);
+}
+
+static void cmd_kbdtid(void) {
+    puts_("kbd.elf tid = ");
+    print_dec(g_kbd_tid);
+    putc_('\n');
+}
+
 static int read_char(void) {
     user_msg_t m;
     for (;;) {
         if (sys_recv(&m) < 0) continue;
+
         if (m.type == MSG_CHAR) return (int)m.data[0];
+
+        /* ★ S4.6.2: kbd.elf 死了，自动重启 */
+        if (m.type == MSG_IRQ_OWNER_DIED &&
+            (int)m.data[0] == 1) {
+            putc_('\n');
+            puts_("[shell] kbd.elf died (IRQ1 released), restarting...\n");
+            restart_kbd();
+            continue;
+        }
     }
 }
 
@@ -723,6 +791,8 @@ static void run_cmd(void) {
     else if (str_eq(p, "ioperm")) cmd_ioperm();
     else if (str_eq(p, "vgatest")) cmd_vgatest();
     else if (str_eq(p, "irqtest")) cmd_irqtest();
+    else if (str_eq(p, "killkbd")) cmd_killkbd();
+    else if (str_eq(p, "kbdtid")) cmd_kbdtid();
     else { puts_("unknown: "); puts_(p); putc_('\n'); }
 
     cmd_len = 0;
@@ -730,27 +800,8 @@ static void run_cmd(void) {
 
 int main(void) {
     puts_("NexOS-NEXT Shell v0.5\n");
-
-    /* ★ S4.5: 键盘驱动现在位于 /system/drive/kbd.elf */
     puts_("Starting keyboard driver (/system/drive/kbd.elf)...\n");
-    int kbd_tid = sys_exec_bg("/system/drive/kbd.elf");
-    if (kbd_tid < 0) {
-        puts_("shell: FATAL - cannot start kbd.elf, code=");
-        char b[4] = { '0' + ((-kbd_tid) % 10), '\n', 0, 0 };
-        puts_(b);
-        for (;;) sys_yield();
-    }
-
-    /* 告诉 kbd.elf：我是你的输出目标 */
-    user_msg_t hello;
-    hello.sender  = 0;
-    hello.type    = MSG_HELLO;
-    for (int i = 0; i < 8; i++) hello.data[i] = 0;
-    sys_send(kbd_tid, &hello);
-
-    puts_("Keyboard driver running (tid=");
-    char b[4] = { '0' + (kbd_tid % 10), ')', '\n', '\0' };
-    puts_(b);
+    restart_kbd();
 
     puts_("Type 'help' for commands.\n\n");
 
