@@ -19,7 +19,7 @@ OBJS = build/serial.o \
        build/heap.o build/vfs.o build/ramfs.o \
        build/ata.o build/nxfs.o build/block_cache.o build/part.o \
        build/thread.o build/sched.o build/switch.o \
-       build/timer.o build/ipc.o build/irq.o build/kbd.o \
+       build/timer.o build/ipc.o build/irq.o \
        build/syscall.o build/usermode.o \
        build/elf_loader.o
 
@@ -81,7 +81,6 @@ build/user_main.o: user/main.c | build
 build/init.elf: build/user_start.o build/user_main.o user/user.ld
 	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/user_main.o
 
-# ★ S4: 键盘驱动进程
 build/kbd_main.o: user/kbd.c | build
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -100,7 +99,6 @@ build/NexOS-NEXT.elf: $(OBJS) linker.ld
 build/kernel.bin: build/NexOS-NEXT.elf
 	objcopy -O binary -R .multiboot -R .bss -R .comment -R .note $< $@
 
-# 加 512B 头
 build/kernel_payload.bin: build/kernel.bin tools/mkkernel
 	./tools/mkkernel build/kernel.bin $@
 
@@ -122,10 +120,11 @@ build/stage2.bin: boot/stage2.asm | build
 # ============================================================
 # ISO（GRUB 启动）
 # ============================================================
-build/NexOS-NEXT.iso: build/NexOS-NEXT.elf build/init.elf grub.cfg
+build/NexOS-NEXT.iso: build/NexOS-NEXT.elf build/init.elf build/kbd.elf grub.cfg
 	mkdir -p build/iso/boot/grub
 	cp build/NexOS-NEXT.elf build/iso/boot/
 	cp build/init.elf       build/iso/boot/
+	cp build/kbd.elf        build/iso/boot/
 	cp grub.cfg build/iso/boot/grub/
 	grub-mkrescue -o $@ build/iso
 
@@ -154,9 +153,11 @@ $(IMAGE_DIR)/disk2.img: | $(IMAGE_DIR)
 tools/mknxfs: tools/mknxfs.c
 	$(CC) -O2 -o $@ $<
 
-# ★ S4: 把 kbd.elf 也打进 NXFS
+# ★ S4.5: 多级路径
 $(NXFS_IMG): build/init.elf build/kbd.elf tools/mknxfs | build
-	./tools/mknxfs $@ build/init.elf:init.elf build/kbd.elf:kbd.elf
+	./tools/mknxfs $@ \
+	    build/init.elf:system/init/init.elf \
+	    build/kbd.elf:system/drive/kbd.elf
 
 # ============================================================
 # 清理

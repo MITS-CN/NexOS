@@ -3,7 +3,6 @@
 #include "thread.h"
 #include "sched.h"
 #include "ipc.h"
-#include "kbd.h"
 #include "elf.h"
 #include "vfs.h"
 #include "part.h"
@@ -21,7 +20,7 @@
 #define SYS_SEND     3
 #define SYS_RECV     4
 #define SYS_GETID    5
-#define SYS_GETCHAR  6
+#define SYS_GETCHAR  6      /* ★ S4.5: 保留编号，case 已删（键盘不再由内核提供） */
 #define SYS_PUTCHAR  7
 #define SYS_OPEN    8
 #define SYS_CLOSE   9
@@ -37,10 +36,10 @@
 #define SYS_YIELD   19
 #define SYS_MEMINFO 20
 #define SYS_INSTALL 21
-#define SYS_IO_PERM 22       /* ★ S1 */
-#define SYS_IRQ_REGISTER   23  /* ★ S3 */
-#define SYS_IRQ_UNREGISTER 24  /* ★ S3 */
-#define SYS_EXEC_BG        25  /* ★ S4: 后台 exec */
+#define SYS_IO_PERM 22
+#define SYS_IRQ_REGISTER   23
+#define SYS_IRQ_UNREGISTER 24
+#define SYS_EXEC_BG        25   /* ★ S4: 后台 exec */
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -129,13 +128,10 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
                 current_thread->page_dir = 0;
             }
 
-            /* 3. 把键盘还给 prev_owner */
+            /* 3. 唤醒父进程（不再涉及键盘 owner） */
             thread_t *prev = current_thread->prev_owner;
             if (prev && prev->state == THREAD_BLOCKED) {
                 prev->state = THREAD_READY;
-                kbd_set_owner(prev);
-            } else {
-                kbd_set_owner(0);
             }
 
             /* 4. 标记自己 DEAD */
@@ -146,29 +142,13 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
 
         case SYS_GETID:
             return current_thread->id;
-        
-        case SYS_GETCHAR: {
-            for (;;) {
-                thread_t *owner = kbd_get_owner();
-                if (owner && owner != current_thread) {
-                    /* 不是前台线程：阻塞 */
-                    current_thread->state = THREAD_BLOCKED;
-                    sched_yield();
-                    continue;
-                }
-                if (!owner) kbd_set_owner(current_thread);   /* ★ 这行 */
 
-                int ch = kbd_getchar();
-                if (ch >= 0) return ch;
-                __asm__ volatile("sti; hlt");
-            }
-        }
+        /* ★ S4.5: SYS_GETCHAR 已删除。键盘输入通过 IPC 从 kbd.elf 获取。 */
 
         case SYS_YIELD:
             sched_yield();
             return 0;
 
-        
         case SYS_PUTCHAR:
             vga_putc((char)a);
             return 0;
@@ -179,7 +159,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
         case SYS_INSTALL:
             return install_to_drive((int)a);
 
-        /* ★ S1: 请求开放用户态 I/O 端口 */
         case SYS_IO_PERM: {
             if (!current_thread || !current_thread->is_user) return -1;
             uint16_t port = (uint16_t)(a & 0xFFFF);
@@ -188,15 +167,13 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return 0;
         }
 
-        /* ★ S3: 注册 IRQ 独占 */
         case SYS_IRQ_REGISTER: {
             if (!current_thread || !current_thread->is_user) return -1;
             int irq = (int)a;
-            if (irq == 0) return -2;   /* IRQ0 时钟保留给内核 */
+            if (irq == 0) return -2;
             return irq_register(irq, current_thread->id);
         }
 
-        /* ★ S3: 解绑 IRQ */
         case SYS_IRQ_UNREGISTER: {
             if (!current_thread || !current_thread->is_user) return -1;
             int irq = (int)a;
@@ -226,13 +203,10 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
         }
 
         case SYS_FG: {
-            thread_t *t = 0;
-
+            /* ★ S4.5: 只唤醒目标线程，不再操作键盘 owner */
             extern thread_t *sched_find(int tid);
-            t = sched_find((int)a);
+            thread_t *t = sched_find((int)a);
             if (!t) return -1;
-            kbd_set_owner(t);
-
             if (t->state == THREAD_BLOCKED) t->state = THREAD_READY;
             return 0;
         }
@@ -308,10 +282,8 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             thread_t *t = thread_create_elf(elf.entry, elf.stack_top, dir);
             if (!t) return -8;
 
-            t->prev_owner = kbd_get_owner();
-            if (!t->prev_owner) t->prev_owner = current_thread;
-
-            kbd_set_owner(t);
+            /* ★ S4.5: 记录父进程；不再抢键盘 owner */
+            t->prev_owner = current_thread;
 
             current_thread->state = THREAD_BLOCKED;
             sched_yield();
@@ -319,7 +291,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return t->id;
         }
 
-        /* ★ S4: 后台 exec —— 加载 ELF、创建线程，但不阻塞当前线程 */
         case SYS_EXEC_BG: {
             if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
 
@@ -353,8 +324,7 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             thread_t *t = thread_create_elf(elf.entry, elf.stack_top, dir);
             if (!t) return -8;
 
-            /* ★ S4: 不设置 prev_owner，不抢键盘 owner，不阻塞。
-               kbd.elf 是独立服务进程。 */
+            /* 后台：不设 prev_owner，不阻塞 */
             return t->id;
         }
 

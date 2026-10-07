@@ -30,6 +30,7 @@ typedef struct thread {
     int            state;
     int            is_user;
     uint32_t      *page_dir;
+    /* ★ S4.5: 语义从"键盘 owner 链"改为"父进程"——exec/exit 栈式嵌套 */
     struct thread *prev_owner;
     message_t     *msg_head;
     message_t     *msg_tail;

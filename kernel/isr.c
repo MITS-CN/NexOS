@@ -1,8 +1,7 @@
 #include "isr.h"
 #include "io.h"
 #include "timer.h"
-#include "kbd.h"
-#include "irq.h"      /* ★ S4 */
+#include "irq.h"      /* ★ S3: IRQ 转发框架（kbd 已从内核移除，S4.5） */
 
 static const char *exception_names[] = {
     "Divide by zero", "Debug", "NMI", "Breakpoint",
@@ -64,13 +63,13 @@ void irq_handler(struct regs *r) {
     int irq_no = (int)(r->int_no - 32);
     if (irq_no < 0 || irq_no >= IRQ_MAX) return;
 
-    /* ★ S4: IRQ0 时钟永远内核处理，不允许用户独占 */
+    /* IRQ0 时钟永远内核处理，不允许用户独占 */
     if (irq_no == 0) {
         timer_tick();
         return;
     }
 
-    /* ★ S4: 如果被用户线程独占，转发 IPC，不执行内核默认处理 */
+    /* 如果被用户线程独占，转发 IPC，不执行内核默认处理 */
     int owner = irq_owner(irq_no);
     if (owner >= 0) {
         uint32_t scancode = 0;
@@ -82,9 +81,5 @@ void irq_handler(struct regs *r) {
         return;
     }
 
-    /* 默认处理 */
-    if (irq_no == 1) {
-        kbd_irq();
-    }
-    /* 其他 IRQ 目前不处理 */
+    /* 其他 IRQ 目前不处理（kbd 已移到用户态 kbd.elf） */
 }

@@ -1,6 +1,6 @@
 ﻿#include "nxfs.h"
 #include "ata.h"
-#include "block_cache.h"   /* 加这行 */
+#include "block_cache.h"   /* ★ 加这行 */
 #include "heap.h"
 
 /* 超级块 */
@@ -402,7 +402,7 @@ static vfs_node_t *nxfs_create(vfs_node_t *parent, const char *name, int type) {
 static int nxfs_unlink(vfs_node_t *node) {
     if (!node || !node->parent) return -1;
 
-    /* 目录是否为空：查磁盘，不查内存 */
+    /* ★ 目录是否为空：查磁盘，不查内存 */
     if (node->type == VFS_DIR) {
         nxfs_dirent_t ent;
         if (dir_find_entry(node->disk_block, 0, &ent) == 0)
@@ -470,7 +470,6 @@ int nxfs_format(void) {
 int nxfs_init(void) {
     extern void vga_puts(const char *);
     extern void vga_hex(uint32_t);
-    extern int  kbd_confirm(const char *);
 
     uint8_t sb_buf[512];
     int rr = ata_read_sectors(NXFS_PART_LBA + 1, 1, sb_buf);
@@ -495,11 +494,8 @@ int nxfs_init(void) {
     if (is_valid_nxfs) {
         vga_puts("  [nxfs] valid superblock, mounting\n");
     } else if (is_blank) {
-        vga_puts("  [nxfs] blank disk detected.\n");
-        if (!kbd_confirm("  Format as NXFS?")) {
-            vga_puts("  [nxfs] declined, halting.\n");
-            return -101;
-        }
+        /* ★ S4.5: kbd_confirm 已删除，改成自动格式化 */
+        vga_puts("  [nxfs] blank disk detected, auto-formatting.\n");
         super.magic         = NXFS_MAGIC;
         super.version       = NXFS_VERSION;
         super.block_sectors = NXFS_BLOCK_SECTORS;
@@ -510,16 +506,13 @@ int nxfs_init(void) {
         super.root_block    = 0;
         need_format = 1;
     } else {
+        /* ★ S4.5: 同样自动格式化 */
         vga_puts("  [nxfs] WARNING: non-NXFS data on disk.\n");
         vga_puts("  [nxfs] magic=");
         vga_hex(super.magic);
         vga_puts(" expected=");
         vga_hex(NXFS_MAGIC);
-        vga_puts("\n  [nxfs] ALL DATA WILL BE DESTROYED.\n");
-        if (!kbd_confirm("  Format anyway?")) {
-            vga_puts("  [nxfs] declined, halting.\n");
-            return -101;
-        }
+        vga_puts("\n  [nxfs] ALL DATA WILL BE DESTROYED, auto-formatting.\n");
         super.magic         = NXFS_MAGIC;
         super.version       = NXFS_VERSION;
         super.block_sectors = NXFS_BLOCK_SECTORS;

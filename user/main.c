@@ -39,7 +39,6 @@ static int take_word(const char *src, char *out, int out_size) {
     return i;
 }
 
-/* ★ S1：打印 4 位十六进制（无前缀） */
 static void print_hex16(uint16_t v) {
     const char *h = "0123456789ABCDEF";
     putc_(h[(v >> 12) & 0xF]);
@@ -244,7 +243,6 @@ static void cmd_write(const char *args) {
     sys_close(fd);
 }
 
-/* 递归删除：先删子项，再删自己 */
 static int do_rm_recursive(const char *path) {
     int fd = sys_open(path, 0);
     if (fd < 0) {
@@ -500,7 +498,7 @@ static void cmd_install(const char *args) {
     puts_("install: target drive ");
     putc_('0' + drive);
     puts_("\n");
-    puts_("install: writing boot + kernel + NXFS + init.elf...\n");
+    puts_("install: writing boot + kernel + NXFS + init.elf + kbd.elf...\n");
 
     int r = sys_install(drive);
     if (r < 0) {
@@ -561,7 +559,6 @@ static void cmd_mem(void) {
     puts_(" KB)\n");
 }
 
-/* ★ S1：请求端口 + 真的 inb/outb 操作 VGA CRTC 光标 */
 static void cmd_ioperm(void) {
     puts_("ioperm: request 0x3D4 ... ");
     int r1 = sys_io_perm(0x3D4);
@@ -619,7 +616,6 @@ static void cmd_ioperm(void) {
     puts_(verify == 0 ? "  OK\n" : "  FAIL\n");
 }
 
-/* ★ S2：用户态直接读写 VGA MMIO（物理 0xB8000 映射到 USER_VGA_BASE） */
 static void cmd_vgatest(void) {
     volatile uint16_t *vga = (volatile uint16_t *)USER_VGA_BASE;
 
@@ -645,7 +641,6 @@ static void cmd_vgatest(void) {
     }
 }
 
-/* ★ S3：尝试独占 IRQ1（现在 kbd.elf 已经占了，预期会失败 -3） */
 static void cmd_irqtest(void) {
     puts_("irqtest: trying to register IRQ1...\n");
     int r = sys_irq_register(1);
@@ -683,7 +678,6 @@ static void cmd_irqtest(void) {
     puts_("irqtest: unregistered.\n");
 }
 
-/* ★ S4：从 kbd.elf 收字符（阻塞） */
 static int read_char(void) {
     user_msg_t m;
     for (;;) {
@@ -737,9 +731,9 @@ static void run_cmd(void) {
 int main(void) {
     puts_("NexOS-NEXT Shell v0.5\n");
 
-    /* ★ S4: 启动用户态键盘驱动 */
-    puts_("Starting keyboard driver (/kbd.elf)...\n");
-    int kbd_tid = sys_exec_bg("/kbd.elf");
+    /* ★ S4.5: 键盘驱动现在位于 /system/drive/kbd.elf */
+    puts_("Starting keyboard driver (/system/drive/kbd.elf)...\n");
+    int kbd_tid = sys_exec_bg("/system/drive/kbd.elf");
     if (kbd_tid < 0) {
         puts_("shell: FATAL - cannot start kbd.elf, code=");
         char b[4] = { '0' + ((-kbd_tid) % 10), '\n', 0, 0 };
