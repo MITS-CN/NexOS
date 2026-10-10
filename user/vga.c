@@ -6,20 +6,19 @@
 #define VGA_BASE      0x10000000u
 #define SCREEN_COLS   80
 #define SCREEN_LINES  25
-#define SB_LINES      128          /* 环形缓冲总行数 */
+#define SB_LINES      128
 #define VGA_ATTR      0x07
 #define BLANK_CELL    ((uint16_t)((VGA_ATTR << 8) | ' '))
 
 static volatile uint16_t *vga = (volatile uint16_t *)VGA_BASE;
 
-/* scrollback 环形缓冲：SB_LINES × 80 格 */
 static uint16_t sb[SB_LINES][SCREEN_COLS];
 
-static int write_line = 0;    /* 当前写入行（环形索引） */
-static int cur_col    = 0;    /* 当前列 */
-static int view_offset = 0;   /* 0 = 显示最新；>0 = 往上翻 */
+static int write_line = 0;
+static int cur_col    = 0;
+static int view_offset = 0;
+static int total_lines_written = 0;
 
-/* ★ 把 0x3D4/0x3D5 的 cursor 设到指定位置；pos 越界时会让光标消失 */
 static void set_hw_cursor(int pos) {
     outb(0x3D4, 0x0F);
     outb(0x3D5, (uint8_t)(pos & 0xFF));
@@ -27,7 +26,6 @@ static void set_hw_cursor(int pos) {
     outb(0x3D5, (uint8_t)((pos >> 8) & 0xFF));
 }
 
-/* 环形索引：write_line 偏移 off 行 */
 static int line_idx(int off) {
     int idx = write_line + off;
     while (idx < 0) idx += SB_LINES;
@@ -38,6 +36,41 @@ static void clear_line(int idx) {
     for (int i = 0; i < SCREEN_COLS; i++) sb[idx][i] = BLANK_CELL;
 }
 
+static int max_view_offset(void) {
+    int m = total_lines_written - SCREEN_LINES;
+    if (m < 0) m = 0;
+    if (m > SB_LINES - SCREEN_LINES) m = SB_LINES - SCREEN_LINES;
+    return m;
+}
+
+/* ★ 改：banner 移到屏幕最后一行右下角，不再遮顶行 */
+static void show_scrollback_banner(void) {
+    const uint16_t attr = (uint16_t)((0x0F << 8));   /* 亮白 */
+
+    char buf[24];
+    int n = 0;
+    const char *pfx = "[SB +";
+    while (pfx[n]) { buf[n] = pfx[n]; n++; }
+
+    int v = view_offset;
+    char digits[8];
+    int d = 0;
+    if (v == 0) digits[d++] = '0';
+    while (v > 0) { digits[d++] = '0' + (v % 10); v /= 10; }
+    while (d > 0) buf[n++] = digits[--d];
+
+    buf[n++] = ']';
+    buf[n] = 0;
+
+    int row = SCREEN_LINES - 1;
+    int start = SCREEN_COLS - n;
+    if (start < 0) start = 0;
+    for (int i = start; i < SCREEN_COLS; i++) {
+        char c = buf[i - start];
+        vga[row * SCREEN_COLS + i] = (uint16_t)(attr | (uint8_t)c);
+    }
+}
+
 static void redraw(void) {
     for (int i = 0; i < SCREEN_LINES; i++) {
         int src = line_idx(i - SCREEN_LINES + 1 - view_offset);
@@ -46,11 +79,14 @@ static void redraw(void) {
         }
     }
 
-    /* 光标只在 view_offset == 0 时显示；浏览模式下把光标推出屏幕 */
+    if (view_offset > 0) {
+        show_scrollback_banner();
+    }
+
     if (view_offset == 0) {
         set_hw_cursor((SCREEN_LINES - 1) * SCREEN_COLS + cur_col);
     } else {
-        set_hw_cursor(SCREEN_LINES * SCREEN_COLS + 1);   /* 越界，硬件不显示 */
+        set_hw_cursor(SCREEN_LINES * SCREEN_COLS + 1);
     }
 }
 
@@ -58,6 +94,7 @@ static void sb_newline(void) {
     cur_col = 0;
     write_line = (write_line + 1) % SB_LINES;
     clear_line(write_line);
+    total_lines_written++;
 }
 
 static void sb_putc(char c) {
@@ -76,16 +113,17 @@ static void sb_putc(char c) {
         if (cur_col >= SCREEN_COLS) sb_newline();
     }
 
-    /* 任何新字符写入 → 回到底部 */
     view_offset = 0;
     redraw();
 }
 
 static void sb_scroll(int z) {
     view_offset += z;
-    if (view_offset < 0) view_offset = 0;
-    if (view_offset > SB_LINES - SCREEN_LINES)
-        view_offset = SB_LINES - SCREEN_LINES;
+
+    int maxv = max_view_offset();
+    if (view_offset < 0)    view_offset = 0;
+    if (view_offset > maxv) view_offset = maxv;
+
     redraw();
 }
 
@@ -96,8 +134,6 @@ static void vga_loop(void) {
         if (sys_recv(&m) < 0) continue;
 
         if (m.type == MSG_EXIT) {
-            /* 退出前把视图拉回底部，让硬件 CRTC 位置有效，
-               内核 fallback 从这里接管光标不会错乱 */
             view_offset = 0;
             redraw();
             sys_exit();
@@ -120,41 +156,26 @@ int main(void) {
     sys_io_perm(0x3D4);
     sys_io_perm(0x3D5);
 
-    int r = sys_vga_claim();
-    if (r < 0) sys_exit();
+    klog_info_t info;
+    int r = sys_vga_fetch_log((void *)sb, &info);
 
-    /* 初始化 scrollback：全填空格 */
-    for (int i = 0; i < SB_LINES; i++) clear_line(i);
+    if (r == 0) {
+        write_line = (int)(info.write_line % SB_LINES);
+        cur_col    = (int)(info.cur_col % SCREEN_COLS);
+        total_lines_written = (int)info.total_written;
 
-    /* 从硬件拿当前 cursor（第一次启动时是内核留下的光标位置）。
-       把它换算成 (行, 列) 并对齐 write_line 和 cur_col。 */
-    int c = sys_vga_get_cursor();
-    if (c >= 0 && c < SCREEN_LINES * SCREEN_COLS) {
-        int line = c / SCREEN_COLS;
-        int col  = c % SCREEN_COLS;
-
-        /* 让当前屏幕内容落在 sb 的底部：write_line = SCREEN_LINES-1 附近 */
-        for (int i = 0; i < SB_LINES; i++) {
-            int src = (i < SCREEN_LINES) ? i : 0;
-            (void)src;
-        }
-
-        /* write_line 停在屏幕第 SCREEN_LINES-1 行位置，也就是 sb 索引 SCREEN_LINES-1 */
-        write_line = SCREEN_LINES - 1;
-        cur_col    = col;
-
-        /* 但这样新字符会覆盖屏幕最后一行；内核其实已经把内容写进显存了，
-           我们搬到 sb 的 [0, SCREEN_LINES-1] 区间 */
-        for (int i = 0; i < SCREEN_LINES; i++) {
-            for (int j = 0; j < SCREEN_COLS; j++) {
-                sb[i][j] = vga[i * SCREEN_COLS + j];
-            }
-        }
-        (void)line;
+        if (write_line < 0) write_line = 0;
+        if (cur_col < 0)    cur_col = 0;
+        if (total_lines_written < 0) total_lines_written = 0;
     } else {
+        for (int i = 0; i < SB_LINES; i++) clear_line(i);
         write_line = 0;
-        cur_col    = 0;
+        cur_col = 0;
+        total_lines_written = 0;
     }
+
+    int r2 = sys_vga_claim();
+    if (r2 < 0) sys_exit();
 
     redraw();
 

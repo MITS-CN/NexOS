@@ -20,6 +20,9 @@ extern int  vga_get_owner(void);
 extern void vga_set_owner(int tid);
 extern void vga_clear_owner(void);
 extern int  vga_get_cursor(void);
+extern int  vga_fetch_log(uint8_t *dst, uint32_t dst_size, void *info_ptr);
+
+#define KLOG_BYTES  (128 * 80 * 2)
 
 #define SYS_PRINT    1
 #define SYS_EXIT     2
@@ -49,7 +52,8 @@ extern int  vga_get_cursor(void);
 #define SYS_VGA_CLAIM      26
 #define SYS_VGA_GET_CURSOR 27
 #define SYS_MOUSE_ENABLE   28
-#define SYS_VGA_GET_OWNER  29   /* ★ S5.5 2d */
+#define SYS_VGA_GET_OWNER  29
+#define SYS_VGA_FETCH_LOG  30   /* ★ S5.6 */
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -244,9 +248,16 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return 0;
         }
 
-        /* ★ S5.5 2d: 任何用户进程都能查 vga owner tid */
         case SYS_VGA_GET_OWNER:
             return vga_get_owner();
+
+        /* ★ S5.6: 拷贝内核 klog 到用户空间 */
+        case SYS_VGA_FETCH_LOG: {
+            if (!current_thread || !current_thread->is_user) return -1;
+            if (!user_range_ok(a, KLOG_BYTES)) return -1;
+            if (!user_range_ok(b, 16)) return -1;
+            return vga_fetch_log((uint8_t *)a, KLOG_BYTES, (void *)b);
+        }
 
         case SYS_SEND: {
             int tid = (int)a;

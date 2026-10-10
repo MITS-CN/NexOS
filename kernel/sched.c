@@ -1,7 +1,7 @@
 ﻿#include "sched.h"
 #include "paging.h"
 #include "heap.h"
-#include "irq.h"      /* ★ S3 */
+#include "irq.h"
 
 extern void gdt_set_kernel_stack(uint32_t esp0);
 
@@ -32,13 +32,22 @@ static int next_ready(int from) {
     return -1;
 }
 
+/* ★ S5.6: 释放死线程剩余的消息队列（防内存泄漏） */
+static void free_msg_chain(message_t *m) {
+    while (m) {
+        message_t *next = m->next;
+        kfree(m);
+        m = next;
+    }
+}
+
 /* 回收所有已死线程（不回收 current_thread 自己） */
 static void reclaim_dead_threads(void) {
     int i = 0;
     while (i < thread_count) {
         thread_t *t = threads[i];
         if (t->state == THREAD_DEAD && t != current_thread) {
-            /* ★ S3: 释放该线程持有的所有 IRQ */
+            /* 释放该线程持有的所有 IRQ */
             irq_release_all(t->id);
 
             /* 从调度数组移除 */
@@ -46,6 +55,11 @@ static void reclaim_dead_threads(void) {
                 threads[j] = threads[j + 1];
             thread_count--;
             if (i < current_idx) current_idx--;
+
+            /* ★ S5.6: 先释放消息队列，再释放内核栈和线程结构 */
+            free_msg_chain(t->msg_head);
+            t->msg_head = 0;
+            t->msg_tail = 0;
 
             /* 释放内核栈 */
             if (t->kernel_stack) kfree(t->kernel_stack);
@@ -72,7 +86,6 @@ static void do_switch(int old_idx, int new_idx) {
 
     current_thread = nxt;
 
-    /* 切页目录 */
     if (nxt->page_dir && nxt->page_dir != paging_get_dir())
         paging_switch_dir(nxt->page_dir);
 
@@ -101,7 +114,6 @@ void sched_yield(void) {
 
     int next = next_ready(current_idx);
     if (next < 0) {
-        /* 没有可运行线程，切回内核主流程 */
         extern void vga_puts(const char *);
         vga_puts("\n[KERNEL] all threads dead, halting\n");
         for (;;) __asm__ volatile("hlt");
@@ -127,7 +139,6 @@ void sched_start(void) {
                  : current_thread->stack_base;
     if (ks) gdt_set_kernel_stack((uint32_t)ks + STACK_SIZE);
 
-    /* 首次切换前切页目录 */
     if (current_thread->page_dir &&
         current_thread->page_dir != paging_get_dir())
         paging_switch_dir(current_thread->page_dir);

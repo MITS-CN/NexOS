@@ -12,7 +12,6 @@ static int     pkt_idx = 0;
 static void emit_scroll(int z) {
     int vga_tid = sys_vga_get_owner();
     if (vga_tid < 0) {
-        /* 没有 vga.elf，打印调试信息 */
         sys_print(z > 0 ? "[mouse] SCROLL UP (no vga)\n"
                         : "[mouse] SCROLL DOWN (no vga)\n");
         return;
@@ -35,7 +34,8 @@ static void handle_byte(uint8_t b) {
         pkt_idx = 0;
 
         int z = (int8_t)(packet[3] << 4) >> 4;
-        if (z != 0) emit_scroll(z);
+        /* ★ 翻转：约定 +z = 上滚（看更早） */
+        if (z != 0) emit_scroll(-z);
     }
 }
 

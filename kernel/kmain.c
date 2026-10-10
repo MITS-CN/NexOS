@@ -22,6 +22,15 @@
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
 
+/* ★ S5.6: 内核启动日志环形缓冲（和 vga.elf 的 sb 结构一致） */
+#define KLOG_LINES 128
+#define KLOG_BYTES (KLOG_LINES * VGA_WIDTH * 2)
+
+static uint16_t klog[KLOG_LINES][VGA_WIDTH];
+static int      klog_write_line = 0;
+static int      klog_col        = 0;
+static uint32_t klog_total      = 1;   /* 已分配行数（含正在写的那行） */
+
 static int cursor = 0;
 
 static int vga_owner_tid = -1;
@@ -46,10 +55,66 @@ static void vga_scroll(void) {
     cursor = (VGA_HEIGHT - 1) * VGA_WIDTH;
 }
 
+/* ---- klog ---- */
+
+static void klog_blank_line(int idx) {
+    for (int i = 0; i < VGA_WIDTH; i++)
+        klog[idx][i] = (uint16_t)((0x07 << 8) | ' ');
+}
+
+static void klog_newline(void) {
+    klog_col = 0;
+    klog_write_line = (klog_write_line + 1) % KLOG_LINES;
+    klog_blank_line(klog_write_line);
+    klog_total++;
+}
+
+static void klog_putc(char c) {
+    if (c == '\r') {
+        klog_col = 0;
+    } else if (c == '\n') {
+        klog_newline();
+    } else if (c == '\b') {
+        if (klog_col > 0) {
+            klog_col--;
+            klog[klog_write_line][klog_col] = (uint16_t)((0x07 << 8) | ' ');
+        }
+    } else {
+        klog[klog_write_line][klog_col] = (uint16_t)((0x07 << 8) | (uint8_t)c);
+        klog_col++;
+        if (klog_col >= VGA_WIDTH) klog_newline();
+    }
+}
+
+static void klog_reset(void) {
+    for (int i = 0; i < KLOG_LINES; i++) klog_blank_line(i);
+    klog_write_line = 0;
+    klog_col        = 0;
+    klog_total      = 1;
+}
+
+/* ★ S5.6: 供 syscall.c 调用 —— 把 klog 拷到用户空间 + 填 info */
+int vga_fetch_log(uint8_t *dst, uint32_t dst_size, void *info_ptr) {
+    if (dst_size < KLOG_BYTES) return -1;
+
+    const uint8_t *k = (const uint8_t *)klog;
+    for (uint32_t i = 0; i < KLOG_BYTES; i++) dst[i] = k[i];
+
+    uint32_t *info = (uint32_t *)info_ptr;
+    info[0] = klog_total;
+    info[1] = (uint32_t)klog_write_line;
+    info[2] = (uint32_t)klog_col;
+    info[3] = 0;
+    return 0;
+}
+
 void vga_clear(void) {
     for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++)
         VGA_MEMORY[i] = (uint16_t)((0x07 << 8) | ' ');
     cursor = 0;
+
+    klog_reset();
+
     outb(0x3D4, 0x0A); outb(0x3D5, 0x0E);
     outb(0x3D4, 0x0B); outb(0x3D5, 0x0F);
     vga_move_cursor();
@@ -73,7 +138,6 @@ void vga_set_owner(int tid) {
 
 void vga_clear_owner(void) {
     if (vga_owner_tid < 0) return;
-
     uint16_t hw = vga_read_hw_cursor();
     if (hw < VGA_WIDTH * VGA_HEIGHT) {
         cursor = (int)hw;
@@ -87,6 +151,9 @@ int vga_get_owner(void) {
 
 void vga_putc(char c) {
     serial_putc(c);
+
+    /* ★ S5.6: 无条件写 klog（无论走 IPC 还是 fallback，klog 都是权威） */
+    klog_putc(c);
 
     if (!panic_mode && vga_owner_tid >= 0) {
         message_t m;
@@ -207,7 +274,6 @@ static void kbd_8042_init(void) {
     inb(0x60);
     kbd_drain_output();
 
-    /* 鼠标：Set Defaults + IntelliMouse 序列，不发 0xF4 */
     mouse_write(0xF6);
     kbd_drain_output();
 
@@ -226,7 +292,6 @@ const uint8_t *g_kbd_elf_data   = 0;
 uint32_t       g_kbd_elf_size   = 0;
 const uint8_t *g_vga_elf_data   = 0;
 uint32_t       g_vga_elf_size   = 0;
-/* ★ S5.5 */
 const uint8_t *g_mouse_elf_data = 0;
 uint32_t       g_mouse_elf_size = 0;
 
@@ -308,7 +373,6 @@ static void materialize_modules_into_nxfs(void) {
         }
     }
 
-    /* ★ S5.5 */
     if (g_mouse_elf_data && g_mouse_elf_size > 0) {
         if (!vfs_lookup("/system/drive/mouse.elf")) {
             int fd = vfs_open("/system/drive/mouse.elf", O_CREAT | O_TRUNC);
@@ -450,7 +514,6 @@ void kmain(uint32_t magic, uint32_t mbi) {
             }
         }
 
-        /* ★ S5.5 */
         uint32_t ms2 = 0, me2 = 0;
         if (mb_module_find(mbi, "mouse.elf", &ms2, &me2) == 0) {
             if (ms2 != 0 && me2 > ms2) {

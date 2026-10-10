@@ -21,6 +21,14 @@ typedef struct {
     uint32_t data[8];
 } user_msg_t;
 
+/* ★ S5.6: 内核 klog 元信息 */
+typedef struct {
+    uint32_t total_written;   /* 已写过的总行数（含被覆盖） */
+    uint32_t write_line;      /* 当前行索引 [0, 128) */
+    uint32_t cur_col;         /* 当前列 [0, 80) */
+    uint32_t _pad;
+} klog_info_t;
+
 #define IRQ_NO_READ  0xFFFFu
 
 static inline void outb(uint16_t port, uint8_t val) {
@@ -272,13 +280,25 @@ static inline int sys_mouse_enable(void) {
     return r;
 }
 
-/* ★ S5.5 2d: 查询 vga owner tid */
 static inline int sys_vga_get_owner(void) {
     int r;
     __asm__ volatile("int $0x80"
         : "=a"(r)
         : "0"(29)
         : "ebx", "ecx", "edx", "esi", "edi", "memory");
+    return r;
+}
+
+/* ★ S5.6: fetch 内核 klog 到用户空间
+   dst: 用户缓冲，须 >= 128*80*2 字节
+   info: 用户 klog_info_t 指针
+   返回 0 成功 */
+static inline int sys_vga_fetch_log(void *dst, klog_info_t *info) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(30), "b"(dst), "c"(info)
+        : "edx", "esi", "edi", "memory");
     return r;
 }
 
