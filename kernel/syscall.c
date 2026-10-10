@@ -14,6 +14,7 @@
 #include "gdt.h"
 #include "irq.h"
 #include "io.h"
+#include "shm.h"      /* ★ S6a */
 #include <stdint.h>
 
 extern int  vga_get_owner(void);
@@ -53,7 +54,8 @@ extern int  vga_fetch_log(uint8_t *dst, uint32_t dst_size, void *info_ptr);
 #define SYS_VGA_GET_CURSOR 27
 #define SYS_MOUSE_ENABLE   28
 #define SYS_VGA_GET_OWNER  29
-#define SYS_VGA_FETCH_LOG  30   /* ★ S5.6 */
+#define SYS_VGA_FETCH_LOG  30
+#define SYS_SHM_ALLOC      31   /* ★ S6a */
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -184,6 +186,9 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
                 }
             }
 
+            /* ★ S6a: 释放该线程持有的所有共享内存 */
+            shm_free_owner(current_thread->id);
+
             if (prev && prev->state == THREAD_BLOCKED) {
                 prev->state = THREAD_READY;
             }
@@ -210,10 +215,15 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
         case SYS_INSTALL:
             return install_to_drive((int)a);
 
+        /* ★ S6a: 白名单扩到 ATA 主通道 */
         case SYS_IO_PERM: {
             if (!current_thread || !current_thread->is_user) return -1;
             uint16_t port = (uint16_t)(a & 0xFFFF);
-            if (port != 0x3D4 && port != 0x3D5) return -2;
+            int ok = 0;
+            if (port == 0x3D4 || port == 0x3D5)         ok = 1;  /* VGA CRTC */
+            if (port >= 0x1F0 && port <= 0x1F7)         ok = 1;  /* ATA data/ctrl */
+            if (port == 0x3F6)                          ok = 1;  /* ATA alt status */
+            if (!ok) return -2;
             tss_allow_io_port(port);
             return 0;
         }
@@ -251,12 +261,29 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
         case SYS_VGA_GET_OWNER:
             return vga_get_owner();
 
-        /* ★ S5.6: 拷贝内核 klog 到用户空间 */
         case SYS_VGA_FETCH_LOG: {
             if (!current_thread || !current_thread->is_user) return -1;
             if (!user_range_ok(a, KLOG_BYTES)) return -1;
             if (!user_range_ok(b, 16)) return -1;
             return vga_fetch_log((uint8_t *)a, KLOG_BYTES, (void *)b);
+        }
+
+        /* ★ S6a: 分配共享内存 + 映射到当前进程 */
+        case SYS_SHM_ALLOC: {
+            if (!current_thread || !current_thread->is_user) return -1;
+
+            int slot = shm_alloc_for(current_thread->id);
+            if (slot < 0) return -1;
+
+            uint32_t phys = shm_get_phys(slot);
+            if (phys == 0) return -1;
+
+            uint32_t user_va = SHM_USER_BASE + (uint32_t)slot * SHM_SIZE;
+
+            paging_map_in(paging_get_dir(), user_va, phys,
+                          PAGE_RW | PAGE_USER);
+
+            return (int)user_va;
         }
 
         case SYS_SEND: {

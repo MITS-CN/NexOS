@@ -21,7 +21,8 @@ OBJS = build/serial.o \
        build/thread.o build/sched.o build/switch.o \
        build/timer.o build/ipc.o build/irq.o \
        build/syscall.o build/usermode.o \
-       build/elf_loader.o build/proc.o
+       build/elf_loader.o build/proc.o \
+       build/shm.o
 
 all: build/NexOS-NEXT.iso $(IMAGE_DIR)/disk.img
 

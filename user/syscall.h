@@ -14,7 +14,7 @@
 #define MSG_MOUSE_QUERY    0x302
 #define MSG_MOUSE_REPORT   0x303
 #define MSG_SCROLL         0x304
-#define MSG_SIGINT         0x305   /* ★ S5.6 C1: Ctrl+C */
+#define MSG_SIGINT         0x305
 
 typedef struct {
     int      sender;
@@ -30,6 +30,10 @@ typedef struct {
 } klog_info_t;
 
 #define IRQ_NO_READ  0xFFFFu
+
+/* ★ S6a: 共享内存 */
+#define SHM_SIZE       4096
+#define SHM_USER_BASE  0x20000000u
 
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile("outb %0, %1" :: "a"(val), "Nd"(port));
@@ -296,6 +300,16 @@ static inline int sys_vga_fetch_log(void *dst, klog_info_t *info) {
         : "0"(30), "b"(dst), "c"(info)
         : "edx", "esi", "edi", "memory");
     return r;
+}
+
+/* ★ S6a: 分配一块共享内存，返回用户态可读写地址；0 = 失败 */
+static inline void *sys_shm_alloc(void) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(31)
+        : "ebx", "ecx", "edx", "esi", "edi", "memory");
+    return (void *)(uint32_t)r;
 }
 
 #endif
