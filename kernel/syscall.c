@@ -14,7 +14,8 @@
 #include "gdt.h"
 #include "irq.h"
 #include "io.h"
-#include "shm.h"      /* ★ S6a */
+#include "shm.h"
+#include "ata.h"      /* ★ S6c */
 #include <stdint.h>
 
 extern int  vga_get_owner(void);
@@ -55,7 +56,8 @@ extern int  vga_fetch_log(uint8_t *dst, uint32_t dst_size, void *info_ptr);
 #define SYS_MOUSE_ENABLE   28
 #define SYS_VGA_GET_OWNER  29
 #define SYS_VGA_FETCH_LOG  30
-#define SYS_SHM_ALLOC      31   /* ★ S6a */
+#define SYS_SHM_ALLOC      31
+#define SYS_ATA_ACTIVATE   32   /* ★ S6c */
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -186,7 +188,15 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
                 }
             }
 
-            /* ★ S6a: 释放该线程持有的所有共享内存 */
+            /* ★ S6c: 如果死者是 atad，关闭 IPC 通道 */
+            {
+                int dslot = shm_find_by_owner(current_thread->id);
+                if (dslot >= 0 && ata_ipc_get_slot() == dslot) {
+                    ata_ipc_clear();
+                }
+            }
+
+            /* 释放共享内存 */
             shm_free_owner(current_thread->id);
 
             if (prev && prev->state == THREAD_BLOCKED) {
@@ -215,14 +225,13 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
         case SYS_INSTALL:
             return install_to_drive((int)a);
 
-        /* ★ S6a: 白名单扩到 ATA 主通道 */
         case SYS_IO_PERM: {
             if (!current_thread || !current_thread->is_user) return -1;
             uint16_t port = (uint16_t)(a & 0xFFFF);
             int ok = 0;
-            if (port == 0x3D4 || port == 0x3D5)         ok = 1;  /* VGA CRTC */
-            if (port >= 0x1F0 && port <= 0x1F7)         ok = 1;  /* ATA data/ctrl */
-            if (port == 0x3F6)                          ok = 1;  /* ATA alt status */
+            if (port == 0x3D4 || port == 0x3D5)         ok = 1;
+            if (port >= 0x1F0 && port <= 0x1F7)         ok = 1;
+            if (port == 0x3F6)                          ok = 1;
             if (!ok) return -2;
             tss_allow_io_port(port);
             return 0;
@@ -268,7 +277,7 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return vga_fetch_log((uint8_t *)a, KLOG_BYTES, (void *)b);
         }
 
-        /* ★ S6a: 分配共享内存 + 映射到当前进程 */
+        /* ★ S6a: 分配共享内存（2 页 = 8KB）+ 映射 */
         case SYS_SHM_ALLOC: {
             if (!current_thread || !current_thread->is_user) return -1;
 
@@ -280,10 +289,23 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
 
             uint32_t user_va = SHM_USER_BASE + (uint32_t)slot * SHM_SIZE;
 
-            paging_map_in(paging_get_dir(), user_va, phys,
-                          PAGE_RW | PAGE_USER);
+            paging_map_in(paging_get_dir(), user_va,
+                          phys, PAGE_RW | PAGE_USER);
+            paging_map_in(paging_get_dir(), user_va + 4096,
+                          phys + 4096, PAGE_RW | PAGE_USER);
 
             return (int)user_va;
+        }
+
+        /* ★ S6c: atad 接管 ATA */
+        case SYS_ATA_ACTIVATE: {
+            if (!current_thread || !current_thread->is_user) return -1;
+
+            int slot = shm_find_by_owner(current_thread->id);
+            if (slot < 0) return -2;
+
+            ata_ipc_set_owner(slot);
+            return 0;
         }
 
         case SYS_SEND: {

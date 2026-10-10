@@ -1,5 +1,8 @@
 ﻿#include "ata.h"
 #include "io.h"
+#include "ipc.h"      /* ★ S6c */
+#include "shm.h"      /* ★ S6c */
+#include "thread.h"   /* ★ S6c */
 
 #define ATA_PRIMARY_IO    0x1F0
 #define ATA_PRIMARY_CTRL  0x3F6
@@ -23,6 +26,15 @@
 #define ATA_CMD_WRITE_PIO   0x30
 #define ATA_CMD_IDENTIFY    0xEC
 #define ATA_CMD_CACHE_FLUSH 0xE7
+
+/* ★ S6c: IPC 通道状态 */
+static int ata_ipc_slot = -1;   /* -1 = 关闭，走 PIO */
+
+void ata_ipc_set_owner(int shm_slot) { ata_ipc_slot = shm_slot; }
+void ata_ipc_clear(void)             { ata_ipc_slot = -1; }
+int  ata_ipc_get_slot(void)          { return ata_ipc_slot; }
+
+/* ---- PIO 实现（原样保留） ---- */
 
 static void ata_400ns_delay(void) {
     inb(ATA_PRIMARY_IO + ATA_REG_STATUS);
@@ -49,7 +61,6 @@ static int ata_wait_drq(void) {
     return -3;
 }
 
-/* 选中盘并等待就绪，返回 0 成功 */
 static int ata_select(int drive) {
     uint8_t sel = (drive == ATA_DRIVE_MASTER) ? 0xA0 : 0xB0;
     outb(ATA_PRIMARY_IO + ATA_REG_DRIVE, sel);
@@ -57,14 +68,13 @@ static int ata_select(int drive) {
 
     for (int i = 0; i < 100000; i++) {
         uint8_t s = inb(ATA_PRIMARY_IO + ATA_REG_STATUS);
-        if (s == 0) return -1;          /* 设备不存在 */
+        if (s == 0) return -1;
         if (s & ATA_SR_ERR) return -1;
         if (!(s & ATA_SR_BSY) && (s & ATA_SR_DRDY)) return 0;
     }
     return -1;
 }
 
-/* 探测并识别主盘，进入已知状态 */
 static int ata_identify(int drive) {
     if (ata_select(drive) < 0) return -1;
 
@@ -75,36 +85,32 @@ static int ata_identify(int drive) {
     outb(ATA_PRIMARY_IO + ATA_REG_COMMAND,  ATA_CMD_IDENTIFY);
 
     uint8_t s = inb(ATA_PRIMARY_IO + ATA_REG_STATUS);
-    if (s == 0) return -1;   /* 无设备 */
+    if (s == 0) return -1;
 
     if (ata_wait_bsy() < 0) return -1;
 
-    /* ATAPI 设备会在这里返回非零 */
     if (inb(ATA_PRIMARY_IO + ATA_REG_LBA_MID) != 0) return -1;
     if (inb(ATA_PRIMARY_IO + ATA_REG_LBA_HI)  != 0) return -1;
 
     if (ata_wait_drq() < 0) return -1;
 
-    /* 读走 256 字 identify 数据 */
     for (int i = 0; i < 256; i++) inw(ATA_PRIMARY_IO + ATA_REG_DATA);
 
     return 0;
 }
 
 int ata_init(void) {
-    /* 软复位 */
     outb(ATA_PRIMARY_CTRL, 0x04);
     ata_400ns_delay();
     outb(ATA_PRIMARY_CTRL, 0x00);
     ata_400ns_delay();
 
-    /* 探测主盘 */
     if (ata_identify(ATA_DRIVE_MASTER) < 0) return -1;
 
     return 0;
 }
 
-int ata_read_sectors_ex(int drive, uint32_t lba, uint8_t count, void *buf) {
+static int ata_pio_read_ex(int drive, uint32_t lba, uint8_t count, void *buf) {
     if (count == 0) return 0;
 
     uint8_t sel = (drive == ATA_DRIVE_MASTER) ? 0xE0 : 0xF0;
@@ -130,7 +136,7 @@ int ata_read_sectors_ex(int drive, uint32_t lba, uint8_t count, void *buf) {
     return 0;
 }
 
-int ata_write_sectors_ex(int drive, uint32_t lba, uint8_t count, const void *buf) {
+static int ata_pio_write_ex(int drive, uint32_t lba, uint8_t count, const void *buf) {
     if (count == 0) return 0;
 
     uint8_t sel = (drive == ATA_DRIVE_MASTER) ? 0xE0 : 0xF0;
@@ -157,6 +163,83 @@ int ata_write_sectors_ex(int drive, uint32_t lba, uint8_t count, const void *buf
     outb(ATA_PRIMARY_IO + ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
     ata_wait_bsy();
     return 0;
+}
+
+/* ---- ★ S6c: IPC 路径 ---- */
+
+static int ata_ipc_do(int op, uint32_t lba, uint8_t count, void *buf) {
+    if (ata_ipc_slot < 0) return -1;
+
+    int atad_tid = shm_get_owner(ata_ipc_slot);
+    if (atad_tid < 0) return -1;
+
+    uint32_t phys = shm_get_phys(ata_ipc_slot);
+    if (phys == 0) return -1;
+
+    volatile struct ata_shm *head = (volatile struct ata_shm *)phys;
+    uint8_t *data = (uint8_t *)(phys + ATA_SH_DATA_OFF);
+
+    uint8_t *io_buf = (uint8_t *)buf;
+    uint8_t remaining = count;
+
+    while (remaining > 0) {
+        uint8_t batch = remaining > ATA_SH_MAX_SEC ? ATA_SH_MAX_SEC : remaining;
+
+        /* WRITE: 数据从 buf 拷进共享页 */
+        if (op == ATA_OP_WRITE) {
+            for (uint32_t i = 0; i < batch * 512; i++)
+                data[i] = io_buf[i];
+        }
+
+        head->magic  = ATA_SHM_MAGIC;
+        head->op     = (uint32_t)op;
+        head->drive  = 0;
+        head->lba    = lba;
+        head->count  = (uint32_t)batch;
+        head->result = 0;
+        head->status = ATA_ST_IDLE;
+
+        __asm__ volatile("" ::: "memory");
+
+        message_t m;
+        m.sender  = -1;
+        m.type    = MSG_ATA_REQ;
+        m.data[0] = 0;
+        for (int i = 1; i < 8; i++) m.data[i] = 0;
+        ipc_send(atad_tid, &m);
+
+        while (head->status != ATA_ST_DONE && head->status != ATA_ST_ERR) {
+            __asm__ volatile("sti; hlt");
+        }
+
+        if (head->status == ATA_ST_ERR) return -1;
+
+        /* READ: 数据从共享页拷出 */
+        if (op == ATA_OP_READ) {
+            for (uint32_t i = 0; i < batch * 512; i++)
+                io_buf[i] = data[i];
+        }
+
+        io_buf    += batch * 512;
+        lba       += batch;
+        remaining -= batch;
+    }
+
+    return 0;
+}
+
+/* ---- 对外接口：入口检查 IPC 开关 ---- */
+
+int ata_read_sectors_ex(int drive, uint32_t lba, uint8_t count, void *buf) {
+    if (drive == ATA_DRIVE_MASTER && ata_ipc_slot >= 0)
+        return ata_ipc_do(ATA_OP_READ, lba, count, buf);
+    return ata_pio_read_ex(drive, lba, count, buf);
+}
+
+int ata_write_sectors_ex(int drive, uint32_t lba, uint8_t count, const void *buf) {
+    if (drive == ATA_DRIVE_MASTER && ata_ipc_slot >= 0)
+        return ata_ipc_do(ATA_OP_WRITE, lba, count, (void *)buf);
+    return ata_pio_write_ex(drive, lba, count, buf);
 }
 
 int ata_read_sectors(uint32_t lba, uint8_t count, void *buf) {

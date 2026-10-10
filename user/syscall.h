@@ -15,6 +15,8 @@
 #define MSG_MOUSE_REPORT   0x303
 #define MSG_SCROLL         0x304
 #define MSG_SIGINT         0x305
+/* ★ S6c */
+#define MSG_ATA_REQ        0x400
 
 typedef struct {
     int      sender;
@@ -31,9 +33,34 @@ typedef struct {
 
 #define IRQ_NO_READ  0xFFFFu
 
-/* ★ S6a: 共享内存 */
-#define SHM_SIZE       4096
+/* ★ S6a/S6c: 共享内存 */
+#define SHM_SIZE       8192
 #define SHM_USER_BASE  0x20000000u
+#define SHM_HEAD_SIZE  4096
+#define SHM_DATA_SIZE  4096
+
+/* ★ S6c: ATA 共享头（和 kernel/ata.h 一致） */
+struct ata_shm {
+    uint32_t magic;
+    uint32_t op;
+    uint32_t drive;
+    uint32_t lba;
+    uint32_t count;
+    uint32_t status;
+    uint32_t result;
+    uint32_t _pad;
+};
+
+#define ATA_SHM_MAGIC    0x41544131u
+#define ATA_OP_READ      0
+#define ATA_OP_WRITE     1
+#define ATA_ST_IDLE      0
+#define ATA_ST_BUSY      1
+#define ATA_ST_DONE      2
+#define ATA_ST_ERR       3
+
+#define ATA_SH_DATA_OFF  4096
+#define ATA_SH_MAX_SEC   8
 
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile("outb %0, %1" :: "a"(val), "Nd"(port));
@@ -42,6 +69,14 @@ static inline uint8_t inb(uint16_t port) {
     uint8_t v;
     __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
     return v;
+}
+static inline uint16_t inw(uint16_t port) {
+    uint16_t v;
+    __asm__ volatile("inw %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
+static inline void outw(uint16_t port, uint16_t val) {
+    __asm__ volatile("outw %0, %1" :: "a"(val), "Nd"(port));
 }
 
 static inline int sys_print(const char *s) {
@@ -302,7 +337,7 @@ static inline int sys_vga_fetch_log(void *dst, klog_info_t *info) {
     return r;
 }
 
-/* ★ S6a: 分配一块共享内存，返回用户态可读写地址；0 = 失败 */
+/* ★ S6a: 分配共享内存，返回用户态可读写地址；0 = 失败 */
 static inline void *sys_shm_alloc(void) {
     int r;
     __asm__ volatile("int $0x80"
@@ -310,6 +345,16 @@ static inline void *sys_shm_alloc(void) {
         : "0"(31)
         : "ebx", "ecx", "edx", "esi", "edi", "memory");
     return (void *)(uint32_t)r;
+}
+
+/* ★ S6c: 告诉内核"我接管 ATA 了"，内核之后所有 ATA 读写走 IPC */
+static inline int sys_ata_activate(void) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(32)
+        : "ebx", "ecx", "edx", "esi", "edi", "memory");
+    return r;
 }
 
 #endif

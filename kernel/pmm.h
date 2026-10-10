@@ -11,4 +11,8 @@ void      pmm_free_page(void *addr);
 uint32_t  pmm_total_pages(void);
 uint32_t  pmm_used_pages(void);
 
+/* ★ S6c: 连续多页分配 */
+void     *pmm_alloc_pages(uint32_t n);
+void      pmm_free_pages(void *addr, uint32_t n);
+
 #endif

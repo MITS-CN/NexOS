@@ -20,7 +20,7 @@ static char cwd[MAX_PATH] = "/";
 static int  g_kbd_tid   = -1;
 static int  g_vga_tid   = -1;
 static int  g_mouse_tid = -1;
-static int  g_atad_tid  = -1;   /* ★ S6b */
+static int  g_atad_tid  = -1;
 
 static char hist[HIST_MAX][512];
 static int  hist_count  = 0;
@@ -142,6 +142,8 @@ static void hist_load(void) {
     int  line_len = 0;
     int  n;
 
+    for (int i = 0; i < 512; i++) line[i] = 0;
+
     for (;;) {
         n = sys_read(fd, buf, sizeof(buf));
         if (n <= 0) break;
@@ -155,9 +157,9 @@ static void hist_load(void) {
                     hist_count++;
                 }
                 line_len = 0;
+                for (int j = 0; j < 512; j++) line[j] = 0;
             } else if (line_len < 511) {
                 line[line_len++] = ch;
-                line[line_len]   = 0;
             }
         }
     }
@@ -165,18 +167,24 @@ static void hist_load(void) {
     g_hist_fd = fd;
 }
 
+/* ★ 修复：清空 cmd + 显式写结束符 */
 static void redraw_input(const char *s) {
     while (cmd_len > 0) {
         putc_('\b');
         cmd_len--;
     }
+
+    /* 清空 cmd 缓冲，防残留 */
+    for (int i = 0; i < 512; i++) cmd[i] = 0;
+
     int n = 0;
     while (s[n] && n < 511) {
         cmd[n] = s[n];
         putc_(s[n]);
         n++;
     }
-    cmd_len = n;
+    cmd[n]   = 0;
+    cmd_len  = n;
 }
 
 static void resolve_path(const char *in, char *out, int out_size) {
@@ -277,7 +285,6 @@ static void restart_mouse(void) {
     putc_('\n');
 }
 
-/* ★ S6b */
 static void restart_atad(void) {
     g_atad_tid = sys_exec_bg("/system/drive/atad.elf");
     if (g_atad_tid < 0) {
@@ -931,7 +938,6 @@ static void cmd_mousetid(void) {
     puts_("mouse.elf tid = "); print_dec(g_mouse_tid); putc_('\n');
 }
 
-/* ★ S6b */
 static void cmd_killatad(void) {
     if (g_atad_tid < 0) { puts_("killatad: no atad.elf running\n"); return; }
     puts_("killatad: sending MSG_EXIT to tid=");
@@ -1042,7 +1048,6 @@ int main(void) {
     puts_("Starting mouse driver (/system/drive/mouse.elf)...\n");
     restart_mouse();
 
-    /* ★ S6b: ATA 驱动 */
     puts_("Starting ATA driver (/system/drive/atad.elf)...\n");
     restart_atad();
 
@@ -1051,6 +1056,9 @@ int main(void) {
     for (;;) {
         puts_(cwd);
         puts_("> ");
+
+        /* ★ 修复：进入提示符前清空 cmd 缓冲 */
+        for (int i = 0; i < 512; i++) cmd[i] = 0;
         cmd_len = 0;
         hist_pos = -1;
 
@@ -1060,9 +1068,11 @@ int main(void) {
             if (c == KEY_UP) {
                 if (hist_count == 0) continue;
                 if (hist_pos == -1) {
+                    /* ★ 修复：只复制 [0, cmd_len)，并写结束符 */
                     cur_save_len = cmd_len;
-                    for (int i = 0; i <= cmd_len && i < 512; i++)
+                    for (int i = 0; i < cmd_len && i < 512; i++)
                         cur_save[i] = cmd[i];
+                    cur_save[cmd_len] = 0;
                     hist_pos = hist_count - 1;
                 } else if (hist_pos > 0) {
                     hist_pos--;
@@ -1088,6 +1098,7 @@ int main(void) {
             if (c == -2) {
                 putc_('\n');
                 puts_("^C\n");
+                for (int i = 0; i < 512; i++) cmd[i] = 0;
                 cmd_len = 0;
                 hist_pos = -1;
                 break;
@@ -1108,6 +1119,7 @@ int main(void) {
             } else if (c >= 32 && c < 127) {
                 if (cmd_len < 511) {
                     cmd[cmd_len++] = (char)c;
+                    cmd[cmd_len]   = 0;   /* ★ 修复：维护结束符 */
                     putc_((char)c);
                 }
             }

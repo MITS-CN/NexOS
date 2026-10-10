@@ -12,9 +12,7 @@ static inline int  bm_test(uint32_t b) { return (bitmap[b >> 3] >> (b & 7)) & 1u
 
 extern char _kernel_start[], _kernel_end[];
 
-/* 物理内存上限：128MB（写死，不再依赖 Multiboot） */
 #define PHYS_TOP  (128 * 1024 * 1024)
-
 
 void pmm_init(void) {
     for (uint32_t i = 0; i < sizeof(bitmap); i++) bitmap[i] = 0xFF;
@@ -51,6 +49,43 @@ void pmm_free_page(void *addr) {
     if (page < total_pages && bm_test(page)) {
         bm_clr(page);
         used_pages--;
+    }
+}
+
+/* ★ S6c */
+void *pmm_alloc_pages(uint32_t n) {
+    if (n == 0) return 0;
+    if (n == 1) return pmm_alloc_page();
+
+    uint32_t run_start = 0;
+    uint32_t run_len   = 0;
+
+    for (uint32_t i = 0; i < total_pages; i++) {
+        if (!bm_test(i)) {
+            if (run_len == 0) run_start = i;
+            run_len++;
+            if (run_len == n) {
+                for (uint32_t j = 0; j < n; j++) {
+                    bm_set(run_start + j);
+                    used_pages++;
+                }
+                return (void *)(run_start * PAGE_SIZE);
+            }
+        } else {
+            run_len = 0;
+        }
+    }
+    return 0;
+}
+
+void pmm_free_pages(void *addr, uint32_t n) {
+    uint32_t start = (uint32_t)addr / PAGE_SIZE;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t p = start + i;
+        if (p < total_pages && bm_test(p)) {
+            bm_clr(p);
+            used_pages--;
+        }
     }
 }
 

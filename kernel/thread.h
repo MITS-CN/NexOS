@@ -16,7 +16,9 @@
 #define MSG_MOUSE_QUERY    0x302
 #define MSG_MOUSE_REPORT   0x303
 #define MSG_SCROLL         0x304
-#define MSG_SIGINT         0x305   /* ★ S5.6 C1: Ctrl+C */
+#define MSG_SIGINT         0x305
+/* ★ S6c: ATA 请求 */
+#define MSG_ATA_REQ        0x400
 
 typedef enum { THREAD_READY, THREAD_BLOCKED, THREAD_DEAD } thread_state_t;
 
