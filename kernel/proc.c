@@ -1,17 +1,11 @@
-﻿/* kernel/proc.c —— /proc 动态文件系统
- *
- * 挂载点：NXFS root 下的 "proc" 目录（纯内存，不落盘）
- * 当前暴露：
- *   /proc/mem    - total / used / free 页面数
- *   /proc/tid    - 读该文件的进程 tid
- *   /proc/uptime - PIT tick 换算的秒.厘秒
- */
+﻿/* kernel/proc.c —— /proc 动态文件系统 */
 
 #include "proc.h"
 #include "vfs.h"
 #include "heap.h"
 #include "pmm.h"
 #include "thread.h"
+#include "sched.h"      /* ★ C2.5 */
 #include "timer.h"
 
 static int u32_to_str(uint32_t v, char *out) {
@@ -83,6 +77,44 @@ static int proc_uptime_read(vfs_node_t *n, uint32_t offset,
     return copy_str(tmp, (uint32_t)p, offset, buf, len);
 }
 
+/* ★ C2.5: 列出所有线程 */
+static const char *state_name(int s) {
+    switch (s) {
+        case THREAD_READY:   return "READY";
+        case THREAD_BLOCKED: return "BLOCK";
+        case THREAD_DEAD:    return "DEAD";
+        default:             return "?";
+    }
+}
+
+static int proc_threads_read(vfs_node_t *n, uint32_t offset,
+                             uint8_t *buf, uint32_t len) {
+    (void)n;
+    char tmp[2048];
+    int p = 0;
+
+    const char *hdr = "tid state user\n";
+    while (*hdr && p < 2000) tmp[p++] = *hdr++;
+
+    int cnt = sched_thread_count();
+    for (int i = 0; i < cnt && p < 2000; i++) {
+        thread_t *t = sched_thread_at(i);
+        if (!t) continue;
+
+        p += u32_to_str((uint32_t)t->id, tmp + p);
+        tmp[p++] = ' ';
+
+        const char *sn = state_name(t->state);
+        while (*sn && p < 2000) tmp[p++] = *sn++;
+
+        tmp[p++] = ' ';
+        tmp[p++] = t->is_user ? '1' : '0';
+        tmp[p++] = '\n';
+    }
+
+    return copy_str(tmp, (uint32_t)p, offset, buf, len);
+}
+
 static vfs_node_t *make_proc_file(const char *name, vfs_read_fn fn) {
     vfs_node_t *n = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
     if (!n) return 0;
@@ -109,7 +141,6 @@ int proc_init(void) {
     vfs_node_t *root = vfs_root();
     if (!root) return -1;
 
-    /* 幂等：已经挂过就不重复挂 */
     for (vfs_node_t *c = root->children; c; c = c->next) {
         if (c->name[0] == 'p' && c->name[1] == 'r' &&
             c->name[2] == 'o' && c->name[3] == 'c' && c->name[4] == 0) {
@@ -129,19 +160,20 @@ int proc_init(void) {
     dir->capacity  = 0;
     dir->disk_block = NO_DISK_BLOCK;
     dir->read_fn   = 0;
-    dir->is_dynamic = 1;         /* 不可 rmdir */
+    dir->is_dynamic = 1;
     dir->parent    = root;
     dir->children  = 0;
     dir->next      = 0;
 
-    vfs_node_t *mem    = make_proc_file("mem",    proc_mem_read);
-    vfs_node_t *tid    = make_proc_file("tid",    proc_tid_read);
-    vfs_node_t *uptime = make_proc_file("uptime", proc_uptime_read);
+    vfs_node_t *files[4];
+    files[0] = make_proc_file("mem",     proc_mem_read);
+    files[1] = make_proc_file("tid",     proc_tid_read);
+    files[2] = make_proc_file("uptime",  proc_uptime_read);
+    files[3] = make_proc_file("threads", proc_threads_read);
 
     vfs_node_t *tail = 0;
-    vfs_node_t *arr[3] = { mem, tid, uptime };
-    for (int k = 0; k < 3; k++) {
-        vfs_node_t *n = arr[k];
+    for (int k = 0; k < 4; k++) {
+        vfs_node_t *n = files[k];
         if (!n) continue;
         n->parent = dir;
         if (!tail) dir->children = n;
@@ -149,7 +181,6 @@ int proc_init(void) {
         tail = n;
     }
 
-    /* 挂到 root 末尾 */
     if (!root->children) {
         root->children = dir;
     } else {

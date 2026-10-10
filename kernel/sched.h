@@ -9,7 +9,10 @@ void sched_start(void);
 void sched_tick(void);
 void sched_yield(void);
 
-/* S4: 补上 sched_find 声明，ipc.c / irq.c 都要用 */
 thread_t *sched_find(int tid);
+
+/* ★ C2.5: 遍历线程列表 */
+int       sched_thread_count(void);
+thread_t *sched_thread_at(int idx);
 
 #endif
