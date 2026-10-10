@@ -6,7 +6,6 @@
 
 #define USER_VGA_BASE 0x10000000u
 
-/* ★ C3: 特殊键 & 历史配置 */
 #define KEY_UP    0x80
 #define KEY_DOWN  0x81
 #define HIST_MAX  32
@@ -21,15 +20,14 @@ static char cwd[MAX_PATH] = "/";
 static int  g_kbd_tid   = -1;
 static int  g_vga_tid   = -1;
 static int  g_mouse_tid = -1;
+static int  g_atad_tid  = -1;   /* ★ S6b */
 
-/* ★ C3: 历史缓冲 */
 static char hist[HIST_MAX][512];
 static int  hist_count  = 0;
 static int  hist_pos    = -1;
 static char cur_save[512];
 static int  cur_save_len = 0;
 
-/* ★ C3 延迟修复: 常驻 append fd */
 static int  g_hist_fd = -1;
 
 static void putc_(char c) { sys_putchar(c); }
@@ -93,8 +91,6 @@ static void ensure_hist_dirs(void) {
     else        sys_close(fd);
 }
 
-/* ★ C3: 加一条历史（去重相邻、满则左移）
-   返回 1 = 真的加了；0 = 跳过 */
 static int hist_add(const char *s) {
     int len = str_len(s);
     if (len == 0) return 0;
@@ -121,7 +117,6 @@ static int hist_add(const char *s) {
     return 1;
 }
 
-/* ★ C3 延迟修复: 追加一行到历史文件（一次 write） */
 static void hist_append(const char *s) {
     if (g_hist_fd < 0) return;
     int len = str_len(s);
@@ -135,12 +130,10 @@ static void hist_append(const char *s) {
     sys_write(g_hist_fd, buf, len + 1);
 }
 
-/* ★ C3: 启动时读历史文件，保留 fd（read 完之后 offset 已在末尾） */
 static void hist_load(void) {
     int fd = sys_open(HIST_PATH, 0);
     if (fd < 0) {
-        /* 首次启动：创建空文件 */
-        fd = sys_open(HIST_PATH, 0x0100);   /* O_CREAT */
+        fd = sys_open(HIST_PATH, 0x0100);
     }
     if (fd < 0) return;
 
@@ -169,7 +162,6 @@ static void hist_load(void) {
         }
     }
 
-    /* ★ 保留 fd：offset 已在末尾，后续 write 就是 append */
     g_hist_fd = fd;
 }
 
@@ -285,6 +277,27 @@ static void restart_mouse(void) {
     putc_('\n');
 }
 
+/* ★ S6b */
+static void restart_atad(void) {
+    g_atad_tid = sys_exec_bg("/system/drive/atad.elf");
+    if (g_atad_tid < 0) {
+        puts_("[shell] restart atad.elf FAILED, code=");
+        print_dec(-g_atad_tid);
+        putc_('\n');
+        return;
+    }
+
+    user_msg_t hello;
+    hello.sender  = 0;
+    hello.type    = MSG_HELLO;
+    for (int i = 0; i < 8; i++) hello.data[i] = 0;
+    sys_send(g_atad_tid, &hello);
+
+    puts_("[shell] atad.elf started, tid=");
+    print_dec(g_atad_tid);
+    putc_('\n');
+}
+
 static void cmd_help(void) {
     puts_("Commands:\n");
     puts_("  help            - show this\n");
@@ -316,6 +329,8 @@ static void cmd_help(void) {
     puts_("  vgatid          - show current vga.elf tid\n");
     puts_("  killmouse       - S5.5 test: kill mouse.elf\n");
     puts_("  mousetid        - show current mouse.elf tid\n");
+    puts_("  killatad        - S6b test: kill atad.elf\n");
+    puts_("  atadtid         - show current atad.elf tid\n");
     puts_("  keys: Up/Down = history, Ctrl+C = cancel input\n");
 }
 
@@ -694,7 +709,7 @@ static void cmd_install(const char *args) {
     puts_("install: target drive ");
     putc_('0' + drive);
     puts_("\n");
-    puts_("install: writing boot + kernel + NXFS + 4 ELFs...\n");
+    puts_("install: writing boot + kernel + NXFS + 5 ELFs...\n");
 
     int r = sys_install(drive);
     if (r < 0) {
@@ -875,72 +890,60 @@ static void cmd_irqtest(void) {
 }
 
 static void cmd_killkbd(void) {
-    if (g_kbd_tid < 0) {
-        puts_("killkbd: no kbd.elf running\n");
-        return;
-    }
-
+    if (g_kbd_tid < 0) { puts_("killkbd: no kbd.elf running\n"); return; }
     puts_("killkbd: sending MSG_EXIT to tid=");
     print_dec(g_kbd_tid);
     putc_('\n');
-
-    user_msg_t m;
-    m.sender  = 0;
-    m.type    = MSG_EXIT;
+    user_msg_t m; m.sender = 0; m.type = MSG_EXIT;
     for (int i = 0; i < 8; i++) m.data[i] = 0;
     sys_send(g_kbd_tid, &m);
 }
 
 static void cmd_kbdtid(void) {
-    puts_("kbd.elf tid = ");
-    print_dec(g_kbd_tid);
-    putc_('\n');
+    puts_("kbd.elf tid = "); print_dec(g_kbd_tid); putc_('\n');
 }
 
 static void cmd_killvga(void) {
-    if (g_vga_tid < 0) {
-        puts_("killvga: no vga.elf running\n");
-        return;
-    }
-
+    if (g_vga_tid < 0) { puts_("killvga: no vga.elf running\n"); return; }
     puts_("killvga: sending MSG_EXIT to tid=");
     print_dec(g_vga_tid);
     putc_('\n');
-
-    user_msg_t m;
-    m.sender  = 0;
-    m.type    = MSG_EXIT;
+    user_msg_t m; m.sender = 0; m.type = MSG_EXIT;
     for (int i = 0; i < 8; i++) m.data[i] = 0;
     sys_send(g_vga_tid, &m);
 }
 
 static void cmd_vgatid(void) {
-    puts_("vga.elf tid = ");
-    print_dec(g_vga_tid);
-    putc_('\n');
+    puts_("vga.elf tid = "); print_dec(g_vga_tid); putc_('\n');
 }
 
 static void cmd_killmouse(void) {
-    if (g_mouse_tid < 0) {
-        puts_("killmouse: no mouse.elf running\n");
-        return;
-    }
-
+    if (g_mouse_tid < 0) { puts_("killmouse: no mouse.elf running\n"); return; }
     puts_("killmouse: sending MSG_EXIT to tid=");
     print_dec(g_mouse_tid);
     putc_('\n');
-
-    user_msg_t m;
-    m.sender  = 0;
-    m.type    = MSG_EXIT;
+    user_msg_t m; m.sender = 0; m.type = MSG_EXIT;
     for (int i = 0; i < 8; i++) m.data[i] = 0;
     sys_send(g_mouse_tid, &m);
 }
 
 static void cmd_mousetid(void) {
-    puts_("mouse.elf tid = ");
-    print_dec(g_mouse_tid);
+    puts_("mouse.elf tid = "); print_dec(g_mouse_tid); putc_('\n');
+}
+
+/* ★ S6b */
+static void cmd_killatad(void) {
+    if (g_atad_tid < 0) { puts_("killatad: no atad.elf running\n"); return; }
+    puts_("killatad: sending MSG_EXIT to tid=");
+    print_dec(g_atad_tid);
     putc_('\n');
+    user_msg_t m; m.sender = 0; m.type = MSG_EXIT;
+    for (int i = 0; i < 8; i++) m.data[i] = 0;
+    sys_send(g_atad_tid, &m);
+}
+
+static void cmd_atadtid(void) {
+    puts_("atad.elf tid = "); print_dec(g_atad_tid); putc_('\n');
 }
 
 static int read_char(void) {
@@ -949,7 +952,6 @@ static int read_char(void) {
         if (sys_recv(&m) < 0) continue;
 
         if (m.type == MSG_CHAR) return (int)m.data[0];
-
         if (m.type == MSG_SIGINT) return -2;
 
         if (m.type == MSG_IRQ_OWNER_DIED) {
@@ -1018,6 +1020,8 @@ static void run_cmd(void) {
     else if (str_eq(p, "vgatid")) cmd_vgatid();
     else if (str_eq(p, "killmouse")) cmd_killmouse();
     else if (str_eq(p, "mousetid")) cmd_mousetid();
+    else if (str_eq(p, "killatad")) cmd_killatad();
+    else if (str_eq(p, "atadtid")) cmd_atadtid();
     else { puts_("unknown: "); puts_(p); putc_('\n'); }
 
     cmd_len = 0;
@@ -1026,7 +1030,6 @@ static void run_cmd(void) {
 int main(void) {
     puts_("NexOS-NEXT Shell v0.5\n");
 
-    /* ★ C3: 历史目录 + 加载（hist_load 会保留一个 append fd） */
     ensure_hist_dirs();
     hist_load();
 
@@ -1039,6 +1042,10 @@ int main(void) {
     puts_("Starting mouse driver (/system/drive/mouse.elf)...\n");
     restart_mouse();
 
+    /* ★ S6b: ATA 驱动 */
+    puts_("Starting ATA driver (/system/drive/atad.elf)...\n");
+    restart_atad();
+
     puts_("Type 'help' for commands.\n\n");
 
     for (;;) {
@@ -1050,7 +1057,6 @@ int main(void) {
         for (;;) {
             int c = read_char();
 
-            /* ★ C3: 方向键 */
             if (c == KEY_UP) {
                 if (hist_count == 0) continue;
                 if (hist_pos == -1) {
@@ -1088,7 +1094,6 @@ int main(void) {
             }
 
             if (c == '\n') {
-                /* ★ C3 延迟修复: append 一行，一次 write */
                 if (hist_add(cmd)) {
                     hist_append(cmd);
                 }

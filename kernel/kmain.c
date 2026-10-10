@@ -23,14 +23,13 @@
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
 
-/* ★ S5.6: 内核启动日志环形缓冲（和 vga.elf 的 sb 结构一致） */
 #define KLOG_LINES 128
 #define KLOG_BYTES (KLOG_LINES * VGA_WIDTH * 2)
 
 static uint16_t klog[KLOG_LINES][VGA_WIDTH];
 static int      klog_write_line = 0;
 static int      klog_col        = 0;
-static uint32_t klog_total      = 1;   /* 已分配行数（含正在写的那行） */
+static uint32_t klog_total      = 1;
 
 static int cursor = 0;
 
@@ -55,8 +54,6 @@ static void vga_scroll(void) {
         VGA_MEMORY[i] = (uint16_t)((0x07 << 8) | ' ');
     cursor = (VGA_HEIGHT - 1) * VGA_WIDTH;
 }
-
-/* ---- klog ---- */
 
 static void klog_blank_line(int idx) {
     for (int i = 0; i < VGA_WIDTH; i++)
@@ -94,7 +91,6 @@ static void klog_reset(void) {
     klog_total      = 1;
 }
 
-/* ★ S5.6: 供 syscall.c 调用 —— 把 klog 拷到用户空间 + 填 info */
 int vga_fetch_log(uint8_t *dst, uint32_t dst_size, void *info_ptr) {
     if (dst_size < KLOG_BYTES) return -1;
 
@@ -129,13 +125,9 @@ static uint16_t vga_read_hw_cursor(void) {
     return ((uint16_t)hi << 8) | lo;
 }
 
-int vga_get_cursor(void) {
-    return cursor;
-}
+int vga_get_cursor(void) { return cursor; }
 
-void vga_set_owner(int tid) {
-    vga_owner_tid = tid;
-}
+void vga_set_owner(int tid) { vga_owner_tid = tid; }
 
 void vga_clear_owner(void) {
     if (vga_owner_tid < 0) return;
@@ -146,14 +138,10 @@ void vga_clear_owner(void) {
     vga_owner_tid = -1;
 }
 
-int vga_get_owner(void) {
-    return vga_owner_tid;
-}
+int vga_get_owner(void) { return vga_owner_tid; }
 
 void vga_putc(char c) {
     serial_putc(c);
-
-    /* ★ S5.6: 无条件写 klog（无论走 IPC 还是 fallback，klog 都是权威） */
     klog_putc(c);
 
     if (!panic_mode && vga_owner_tid >= 0) {
@@ -194,8 +182,6 @@ void vga_hex(uint32_t v) {
     vga_puts("0x");
     for (int i = 28; i >= 0; i -= 4) vga_putc(h[(v >> i) & 0xF]);
 }
-
-/* ---- 8042 helpers ---- */
 
 static void kbd_wait_input_clear(void) {
     for (int i = 0; i < 100000; i++) {
@@ -295,6 +281,9 @@ const uint8_t *g_vga_elf_data   = 0;
 uint32_t       g_vga_elf_size   = 0;
 const uint8_t *g_mouse_elf_data = 0;
 uint32_t       g_mouse_elf_size = 0;
+/* ★ S6b */
+const uint8_t *g_atad_elf_data  = 0;
+uint32_t       g_atad_elf_size  = 0;
 
 #define MULTIBOOT_BOOTLOADER_MAGIC  0x2BADB002
 
@@ -341,47 +330,29 @@ static void materialize_modules_into_nxfs(void) {
     if (!vfs_lookup("/system/init"))  vfs_create("/system/init",  VFS_DIR);
     if (!vfs_lookup("/system/drive")) vfs_create("/system/drive", VFS_DIR);
 
-    if (g_init_elf_data && g_init_elf_size > 0) {
-        if (!vfs_lookup("/system/init/init.elf")) {
-            int fd = vfs_open("/system/init/init.elf", O_CREAT | O_TRUNC);
-            if (fd >= 0) {
-                vfs_fd_write(fd, g_init_elf_data, g_init_elf_size);
-                vfs_close(fd);
-                vga_puts("[OK] init.elf written into NXFS\n");
-            }
-        }
-    }
+    struct {
+        const uint8_t *data;
+        uint32_t size;
+        const char *path;
+    } jobs[5] = {
+        { g_init_elf_data,  g_init_elf_size,  "/system/init/init.elf"    },
+        { g_kbd_elf_data,   g_kbd_elf_size,   "/system/drive/kbd.elf"    },
+        { g_vga_elf_data,   g_vga_elf_size,   "/system/drive/vga.elf"    },
+        { g_mouse_elf_data, g_mouse_elf_size, "/system/drive/mouse.elf"  },
+        { g_atad_elf_data,  g_atad_elf_size,  "/system/drive/atad.elf"   },
+    };
 
-    if (g_kbd_elf_data && g_kbd_elf_size > 0) {
-        if (!vfs_lookup("/system/drive/kbd.elf")) {
-            int fd = vfs_open("/system/drive/kbd.elf", O_CREAT | O_TRUNC);
-            if (fd >= 0) {
-                vfs_fd_write(fd, g_kbd_elf_data, g_kbd_elf_size);
-                vfs_close(fd);
-                vga_puts("[OK] kbd.elf written into NXFS\n");
-            }
-        }
-    }
+    for (int k = 0; k < 5; k++) {
+        if (!jobs[k].data || jobs[k].size == 0) continue;
+        if (vfs_lookup(jobs[k].path)) continue;
 
-    if (g_vga_elf_data && g_vga_elf_size > 0) {
-        if (!vfs_lookup("/system/drive/vga.elf")) {
-            int fd = vfs_open("/system/drive/vga.elf", O_CREAT | O_TRUNC);
-            if (fd >= 0) {
-                vfs_fd_write(fd, g_vga_elf_data, g_vga_elf_size);
-                vfs_close(fd);
-                vga_puts("[OK] vga.elf written into NXFS\n");
-            }
-        }
-    }
-
-    if (g_mouse_elf_data && g_mouse_elf_size > 0) {
-        if (!vfs_lookup("/system/drive/mouse.elf")) {
-            int fd = vfs_open("/system/drive/mouse.elf", O_CREAT | O_TRUNC);
-            if (fd >= 0) {
-                vfs_fd_write(fd, g_mouse_elf_data, g_mouse_elf_size);
-                vfs_close(fd);
-                vga_puts("[OK] mouse.elf written into NXFS\n");
-            }
+        int fd = vfs_open(jobs[k].path, O_CREAT | O_TRUNC);
+        if (fd >= 0) {
+            vfs_fd_write(fd, jobs[k].data, jobs[k].size);
+            vfs_close(fd);
+            vga_puts("[OK] written: ");
+            vga_puts(jobs[k].path);
+            vga_puts("\n");
         }
     }
 }
@@ -439,7 +410,6 @@ void kmain(uint32_t magic, uint32_t mbi) {
     vfs_use_nxfs();
     vga_puts("[OK] VFS now on NXFS\n");
 
-    /* ★ C2: 挂载 /proc */
     if (proc_init() == 0) {
         vga_puts("[OK] procfs mounted at /proc\n\n");
     } else {
@@ -529,6 +499,18 @@ void kmain(uint32_t magic, uint32_t mbi) {
                 g_mouse_elf_size = me2 - ms2;
                 vga_puts("[OK] mouse.elf from GRUB module, size=");
                 vga_hex(g_mouse_elf_size);
+                vga_puts("\n");
+            }
+        }
+
+        /* ★ S6b */
+        uint32_t as = 0, ae = 0;
+        if (mb_module_find(mbi, "atad.elf", &as, &ae) == 0) {
+            if (as != 0 && ae > as) {
+                g_atad_elf_data = (const uint8_t *)as;
+                g_atad_elf_size = ae - as;
+                vga_puts("[OK] atad.elf from GRUB module, size=");
+                vga_hex(g_atad_elf_size);
                 vga_puts("\n");
             }
         }

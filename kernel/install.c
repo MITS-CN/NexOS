@@ -95,39 +95,35 @@ static int write_nxfs(int drv) {
     uint32_t kbd_size   = g_kbd_elf_size;
     uint32_t vga_size   = g_vga_elf_size;
     uint32_t mouse_size = g_mouse_elf_size;
+    uint32_t atad_size  = g_atad_elf_size;
     if (!g_init_elf_data  || init_size  == 0) return -1;
     if (!g_kbd_elf_data   || kbd_size   == 0) return -1;
     if (!g_vga_elf_data   || vga_size   == 0) return -1;
     if (!g_mouse_elf_data || mouse_size == 0) return -1;
+    if (!g_atad_elf_data  || atad_size  == 0) return -1;
 
     uint32_t init_blocks  = (init_size  + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
     uint32_t kbd_blocks   = (kbd_size   + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
     uint32_t vga_blocks   = (vga_size   + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
     uint32_t mouse_blocks = (mouse_size + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
+    uint32_t atad_blocks  = (atad_size  + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
 
     uint32_t init_first  = 4;
     uint32_t kbd_first   = init_first  + init_blocks;
     uint32_t vga_first   = kbd_first   + kbd_blocks;
     uint32_t mouse_first = vga_first   + vga_blocks;
-    uint32_t total_used  = mouse_first + mouse_blocks;
+    uint32_t atad_first  = mouse_first + mouse_blocks;
+    uint32_t total_used  = atad_first  + atad_blocks;
 
     if (total_used > 128) return -1;
 
-    /* 超级块 */
     uint8_t sb[512];
     for (int i = 0; i < 512; i++) sb[i] = 0;
     uint32_t *s = (uint32_t *)sb;
-    s[0] = 0x5346584E;
-    s[1] = 1;
-    s[2] = 8;
-    s[3] = 8192;
-    s[4] = 2;
-    s[5] = 64;
-    s[6] = 66;
-    s[7] = 0;
+    s[0] = 0x5346584E; s[1] = 1; s[2] = 8; s[3] = 8192;
+    s[4] = 2; s[5] = 64; s[6] = 66; s[7] = 0;
     if (ata_write_sectors_ex(drv, NXFS_PART_LBA + 1, 1, sb) < 0) return -1;
 
-    /* FAT 清零 */
     uint8_t zero512[512];
     for (int i = 0; i < 512; i++) zero512[i] = 0;
     for (uint32_t i = 0; i < 64; i++) {
@@ -135,7 +131,6 @@ static int write_nxfs(int drv) {
             return -1;
     }
 
-    /* FAT 第一扇区 */
     uint8_t fat_sec[512];
     for (int i = 0; i < 512; i++) fat_sec[i] = 0;
     uint32_t *t32 = (uint32_t *)fat_sec;
@@ -158,11 +153,14 @@ static int write_nxfs(int drv) {
         uint32_t b = mouse_first + i;
         t32[b] = (i == mouse_blocks - 1) ? 0xFFFFFFFFu : (b + 1);
     }
+    for (uint32_t i = 0; i < atad_blocks; i++) {
+        uint32_t b = atad_first + i;
+        t32[b] = (i == atad_blocks - 1) ? 0xFFFFFFFFu : (b + 1);
+    }
 
     if (ata_write_sectors_ex(drv, NXFS_PART_LBA + 2, 1, fat_sec) < 0)
         return -1;
 
-    /* 目录块 */
     uint8_t blk[NXFS_BLOCK_SIZE];
 
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
@@ -182,17 +180,18 @@ static int write_nxfs(int drv) {
     set_dirent(blk, 0, "kbd.elf",   1, kbd_size,   kbd_first);
     set_dirent(blk, 1, "vga.elf",   1, vga_size,   vga_first);
     set_dirent(blk, 2, "mouse.elf", 1, mouse_size, mouse_first);
+    set_dirent(blk, 3, "atad.elf",  1, atad_size,  atad_first);
     if (write_data_block(drv, 3, blk) < 0) return -1;
 
-    /* 四个 ELF 数据 */
-    struct { const uint8_t *p; uint32_t size; uint32_t first; } jobs[4] = {
+    struct { const uint8_t *p; uint32_t size; uint32_t first; } jobs[5] = {
         { g_init_elf_data,  init_size,  init_first  },
         { g_kbd_elf_data,   kbd_size,   kbd_first   },
         { g_vga_elf_data,   vga_size,   vga_first   },
         { g_mouse_elf_data, mouse_size, mouse_first },
+        { g_atad_elf_data,  atad_size,  atad_first  },
     };
 
-    for (int j = 0; j < 4; j++) {
+    for (int j = 0; j < 5; j++) {
         const uint8_t *p = jobs[j].p;
         uint32_t remaining = jobs[j].size;
         uint32_t blk_no = jobs[j].first;
@@ -217,6 +216,7 @@ int install_to_drive(int drive) {
     if (!g_kbd_elf_data   || g_kbd_elf_size   == 0) return -1;
     if (!g_vga_elf_data   || g_vga_elf_size   == 0) return -1;
     if (!g_mouse_elf_data || g_mouse_elf_size == 0) return -1;
+    if (!g_atad_elf_data  || g_atad_elf_size  == 0) return -1;
 
     if (write_stage1(drive) < 0) return -2;
     if (write_stage2(drive) < 0) return -3;

@@ -85,6 +85,13 @@ build/mouse_main.o: user/mouse.c | build
 build/mouse.elf: build/user_start.o build/mouse_main.o user/user.ld
 	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/mouse_main.o
 
+# ★ S6b
+build/atad_main.o: user/atad.c | build
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+build/atad.elf: build/user_start.o build/atad_main.o user/user.ld
+	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/atad_main.o
+
 build/NexOS-NEXT.elf: $(OBJS) linker.ld
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lgcc
 
@@ -106,13 +113,14 @@ build/stage1.bin: boot/stage1.asm | build
 build/stage2.bin: boot/stage2.asm | build
 	nasm -f bin -o $@ $<
 
-build/NexOS-NEXT.iso: build/NexOS-NEXT.elf build/init.elf build/kbd.elf build/vga.elf build/mouse.elf grub.cfg
+build/NexOS-NEXT.iso: build/NexOS-NEXT.elf build/init.elf build/kbd.elf build/vga.elf build/mouse.elf build/atad.elf grub.cfg
 	mkdir -p build/iso/boot/grub
 	cp build/NexOS-NEXT.elf build/iso/boot/
 	cp build/init.elf       build/iso/boot/
 	cp build/kbd.elf        build/iso/boot/
 	cp build/vga.elf        build/iso/boot/
 	cp build/mouse.elf      build/iso/boot/
+	cp build/atad.elf       build/iso/boot/
 	cp grub.cfg build/iso/boot/grub/
 	grub-mkrescue -o $@ build/iso
 
@@ -136,12 +144,13 @@ $(IMAGE_DIR)/disk2.img: | $(IMAGE_DIR)
 tools/mknxfs: tools/mknxfs.c
 	$(CC) -O2 -o $@ $<
 
-$(NXFS_IMG): build/init.elf build/kbd.elf build/vga.elf build/mouse.elf tools/mknxfs | build
+$(NXFS_IMG): build/init.elf build/kbd.elf build/vga.elf build/mouse.elf build/atad.elf tools/mknxfs | build
 	./tools/mknxfs $@ \
 	    build/init.elf:system/init/init.elf \
 	    build/kbd.elf:system/drive/kbd.elf \
 	    build/vga.elf:system/drive/vga.elf \
-	    build/mouse.elf:system/drive/mouse.elf
+	    build/mouse.elf:system/drive/mouse.elf \
+	    build/atad.elf:system/drive/atad.elf
 
 clean:
 	rm -rf build
