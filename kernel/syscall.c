@@ -13,9 +13,9 @@
 #include "install.h"
 #include "gdt.h"
 #include "irq.h"
+#include "io.h"      /* ★ S5.5: inb / outb */
 #include <stdint.h>
 
-/* ★ S5: kmain.c 里的 VGA 接口 */
 extern int  vga_get_owner(void);
 extern void vga_set_owner(int tid);
 extern void vga_clear_owner(void);
@@ -46,8 +46,9 @@ extern int  vga_get_cursor(void);
 #define SYS_IRQ_REGISTER   23
 #define SYS_IRQ_UNREGISTER 24
 #define SYS_EXEC_BG        25
-#define SYS_VGA_CLAIM      26   /* ★ S5 */
-#define SYS_VGA_GET_CURSOR 27   /* ★ S5 */
+#define SYS_VGA_CLAIM      26
+#define SYS_VGA_GET_CURSOR 27
+#define SYS_MOUSE_ENABLE   28   /* ★ S5.5 */
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -75,6 +76,34 @@ static int user_str_ok(const char *s, uint32_t maxlen) {
         if (s[i] == 0) return 1;
     }
     return 0;
+}
+
+/* ★ S5.5: 向鼠标（辅助端口）发 0xF4，开始数据上报。
+   由 mouse.elf 在注册 IRQ12 之后调用。 */
+static void mouse_enable_reporting(void) {
+    /* 等 input buffer 空 */
+    for (int i = 0; i < 100000; i++) {
+        if (!(inb(0x64) & 0x02)) break;
+    }
+    outb(0x64, 0xD4);
+
+    /* 等 input buffer 空 */
+    for (int i = 0; i < 100000; i++) {
+        if (!(inb(0x64) & 0x02)) break;
+    }
+    outb(0x60, 0xF4);
+
+    /* 吃掉 ACK 0xFA */
+    for (int i = 0; i < 100000; i++) {
+        if (inb(0x64) & 0x01) break;
+    }
+    if (inb(0x64) & 0x01) inb(0x60);
+
+    /* 清残留（可能还有别的字节） */
+    for (int i = 0; i < 64; i++) {
+        if (!(inb(0x64) & 0x01)) break;
+        inb(0x60);
+    }
 }
 
 int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
@@ -124,8 +153,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return vfs_unlink((const char *)a);
         }
 
-        /* ★ S4.6.2: IRQ owner 死亡通知
-           ★ S5:     VGA owner 死亡通知 */
         case SYS_EXIT: {
             uint32_t *kdir = paging_kernel_dir();
             if (current_thread->page_dir &&
@@ -137,7 +164,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
 
             thread_t *prev = current_thread->prev_owner;
 
-            /* --- IRQ owner 死亡 --- */
             int dying_irq = irq_find_by_owner(current_thread->id);
             if (dying_irq >= 0) {
                 irq_release_all(current_thread->id);
@@ -151,9 +177,8 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
                 }
             }
 
-            /* --- ★ S5: VGA owner 死亡 --- */
             if (vga_get_owner() == current_thread->id) {
-                vga_clear_owner();   /* 内核从硬件 CRTC 同步 cursor */
+                vga_clear_owner();
                 if (prev) {
                     message_t m;
                     m.sender  = -1;
@@ -211,17 +236,22 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return irq_unregister(irq, current_thread->id);
         }
 
-        /* ★ S5: VGA 接管 */
         case SYS_VGA_CLAIM: {
             if (!current_thread || !current_thread->is_user) return -1;
-            if (vga_get_owner() >= 0) return -2;   /* 已被别人占 */
+            if (vga_get_owner() >= 0) return -2;
             vga_set_owner(current_thread->id);
             return 0;
         }
 
-        /* ★ S5: 拿当前 cursor（vga.elf 启动时对齐） */
         case SYS_VGA_GET_CURSOR:
             return vga_get_cursor();
+
+        /* ★ S5.5: 让鼠标开始上报数据 */
+        case SYS_MOUSE_ENABLE: {
+            if (!current_thread || !current_thread->is_user) return -1;
+            mouse_enable_reporting();
+            return 0;
+        }
 
         case SYS_SEND: {
             int tid = (int)a;

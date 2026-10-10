@@ -11,9 +11,10 @@
 #define MSG_EXIT           0x202
 #define MSG_VGA_CHAR       0x300
 #define MSG_VGA_OWNER_DIED 0x301
-/* ★ S5.5: 鼠标查询/应答 */
 #define MSG_MOUSE_QUERY    0x302
 #define MSG_MOUSE_REPORT   0x303
+/* ★ S5.5: 滚轮事件（mouse.elf → vga.elf） */
+#define MSG_SCROLL         0x304
 
 typedef struct {
     int      sender;
@@ -259,6 +260,16 @@ static inline int sys_vga_get_cursor(void) {
     __asm__ volatile("int $0x80"
         : "=a"(r)
         : "0"(27)
+        : "ebx", "ecx", "edx", "esi", "edi", "memory");
+    return r;
+}
+
+/* ★ S5.5: 让鼠标开始上报数据（须先 irq_register(12, 0x60)） */
+static inline int sys_mouse_enable(void) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(28)
         : "ebx", "ecx", "edx", "esi", "edi", "memory");
     return r;
 }
