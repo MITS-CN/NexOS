@@ -13,9 +13,10 @@
 #define MSG_EXIT           0x202
 #define MSG_VGA_CHAR       0x300
 #define MSG_VGA_OWNER_DIED 0x301
-/* ★ S5.5: 鼠标查询/应答 */
 #define MSG_MOUSE_QUERY    0x302
 #define MSG_MOUSE_REPORT   0x303
+#define MSG_SCROLL         0x304
+#define MSG_SIGINT         0x305   /* ★ S5.6 C1: Ctrl+C */
 
 typedef enum { THREAD_READY, THREAD_BLOCKED, THREAD_DEAD } thread_state_t;
 

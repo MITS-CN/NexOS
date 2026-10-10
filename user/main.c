@@ -813,12 +813,15 @@ static void cmd_mousetid(void) {
     putc_('\n');
 }
 
+/* ★ S5.6 C1: MSG_SIGINT → 返回 -2 */
 static int read_char(void) {
     user_msg_t m;
     for (;;) {
         if (sys_recv(&m) < 0) continue;
 
         if (m.type == MSG_CHAR) return (int)m.data[0];
+
+        if (m.type == MSG_SIGINT) return -2;
 
         if (m.type == MSG_IRQ_OWNER_DIED) {
             int irq = (int)m.data[0];
@@ -912,6 +915,14 @@ int main(void) {
 
         for (;;) {
             int c = read_char();
+
+            /* ★ S5.6 C1: Ctrl+C 清空当前输入 */
+            if (c == -2) {
+                putc_('\n');
+                puts_("^C\n");
+                cmd_len = 0;
+                break;
+            }
 
             if (c == '\n') {
                 run_cmd();

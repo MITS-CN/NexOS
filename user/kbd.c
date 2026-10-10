@@ -59,8 +59,6 @@ static void kbd_loop(void) {
             continue;
         }
 
-        /* ★ S4.6.2: 收到退出命令，主动 sys_exit；
-           内核 SYS_EXIT 会通知父进程（shell）重启我们 */
         if (m.type == MSG_EXIT) {
             sys_exit();
         }
@@ -77,6 +75,18 @@ static void kbd_loop(void) {
 
         if (sc & 0x80) continue;
         if (sc >= 128) continue;
+
+        /* ★ S5.6 C1: Ctrl+C → MSG_SIGINT（sc 0x2E = 'c'） */
+        if (ctrl_pressed && sc == 0x2E) {
+            if (out_tid >= 0) {
+                user_msg_t sig;
+                sig.sender = 0;
+                sig.type   = MSG_SIGINT;
+                for (int i = 0; i < 8; i++) sig.data[i] = 0;
+                sys_send(out_tid, &sig);
+            }
+            continue;
+        }
 
         char c = shift_pressed ? shift_map[sc] : scancode_map[sc];
         if (c == 0) continue;

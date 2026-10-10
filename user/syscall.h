@@ -14,6 +14,7 @@
 #define MSG_MOUSE_QUERY    0x302
 #define MSG_MOUSE_REPORT   0x303
 #define MSG_SCROLL         0x304
+#define MSG_SIGINT         0x305   /* ★ S5.6 C1: Ctrl+C */
 
 typedef struct {
     int      sender;
@@ -21,11 +22,10 @@ typedef struct {
     uint32_t data[8];
 } user_msg_t;
 
-/* ★ S5.6: 内核 klog 元信息 */
 typedef struct {
-    uint32_t total_written;   /* 已写过的总行数（含被覆盖） */
-    uint32_t write_line;      /* 当前行索引 [0, 128) */
-    uint32_t cur_col;         /* 当前列 [0, 80) */
+    uint32_t total_written;
+    uint32_t write_line;
+    uint32_t cur_col;
     uint32_t _pad;
 } klog_info_t;
 
@@ -289,10 +289,6 @@ static inline int sys_vga_get_owner(void) {
     return r;
 }
 
-/* ★ S5.6: fetch 内核 klog 到用户空间
-   dst: 用户缓冲，须 >= 128*80*2 字节
-   info: 用户 klog_info_t 指针
-   返回 0 成功 */
 static inline int sys_vga_fetch_log(void *dst, klog_info_t *info) {
     int r;
     __asm__ volatile("int $0x80"
