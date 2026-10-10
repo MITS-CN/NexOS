@@ -148,36 +148,29 @@ static void kbd_drain_output(void) {
     }
 }
 
-/* 给鼠标（辅助端口）发一个字节：0xD4 前缀 + 数据；吃掉 ACK */
 static void mouse_write(uint8_t data) {
     kbd_wait_input_clear();
     outb(0x64, 0xD4);
     kbd_wait_input_clear();
     outb(0x60, data);
     kbd_wait_output_full();
-    inb(0x60);   /* ACK 0xFA */
+    inb(0x60);
 }
 
-/* 读鼠标 device ID（0xF2）：返回 0x00 / 0x03(IntelliMouse 4B) / 0x04(5B) */
 static uint8_t mouse_read_id(void) {
     kbd_wait_input_clear();
     outb(0x64, 0xD4);
     kbd_wait_input_clear();
     outb(0x60, 0xF2);
     kbd_wait_output_full();
-    inb(0x60);              /* ACK 0xFA */
+    inb(0x60);
     kbd_wait_output_full();
-    return inb(0x60);       /* device ID */
+    return inb(0x60);
 }
 
-/* 初始化 8042：主键盘 + 辅助端口 + IntelliMouse 4 字节模式
-   ★ 关键：不在此处发 0xF4（Enable Data Reporting）。
-   鼠标数据上报要等 mouse.elf 注册 IRQ12 后再发，否则 8042 输出缓冲
-   会被鼠标数据填满，键盘数据进不来。 */
 static void kbd_8042_init(void) {
     kbd_drain_output();
 
-    /* 1. 启用主键盘端口 + 辅助端口 */
     kbd_wait_input_clear();
     outb(0x64, 0xAE);
     for (volatile int i = 0; i < 1000; i++);
@@ -188,7 +181,6 @@ static void kbd_8042_init(void) {
 
     kbd_drain_output();
 
-    /* 2. 读 config，只在需要时写回（不碰 bit4/bit6） */
     kbd_wait_input_clear();
     outb(0x64, 0x20);
     kbd_wait_output_full();
@@ -196,9 +188,9 @@ static void kbd_8042_init(void) {
 
     uint8_t new_cfg = cfg;
     int need_write = 0;
-    if (!(cfg & 0x01)) { new_cfg |= 0x01; need_write = 1; }   /* IRQ1 */
-    if (!(cfg & 0x02)) { new_cfg |= 0x02; need_write = 1; }   /* IRQ12 */
-    if (cfg & 0x20)    { new_cfg &= ~0x20; need_write = 1; }  /* 清辅助时钟禁用 */
+    if (!(cfg & 0x01)) { new_cfg |= 0x01; need_write = 1; }
+    if (!(cfg & 0x02)) { new_cfg |= 0x02; need_write = 1; }
+    if (cfg & 0x20)    { new_cfg &= ~0x20; need_write = 1; }
 
     if (need_write) {
         kbd_wait_input_clear();
@@ -209,35 +201,34 @@ static void kbd_8042_init(void) {
 
     kbd_drain_output();
 
-    /* 3. 主键盘启用扫描 */
     kbd_wait_input_clear();
     outb(0x60, 0xF4);
     kbd_wait_output_full();
     inb(0x60);
     kbd_drain_output();
 
-    /* 4. 鼠标：Set Defaults（不 enable 数据上报） */
+    /* 鼠标：Set Defaults + IntelliMouse 序列，不发 0xF4 */
     mouse_write(0xF6);
     kbd_drain_output();
 
-    /* 5. ★ IntelliMouse 魔法序列：3 次改采样率 + Get ID */
     mouse_write(0xF3); mouse_write(200);
     mouse_write(0xF3); mouse_write(100);
     mouse_write(0xF3); mouse_write(80);
     uint8_t id = mouse_read_id();
-    (void)id;   /* 0x03 = IntelliMouse (4 字节包)；其他 = 3 字节包 */
-
-    /* ★ 不发 0xF4。等 mouse.elf 起来后自己发。 */
+    (void)id;
 
     kbd_drain_output();
 }
 
-const uint8_t *g_init_elf_data = 0;
-uint32_t       g_init_elf_size = 0;
-const uint8_t *g_kbd_elf_data  = 0;
-uint32_t       g_kbd_elf_size  = 0;
-const uint8_t *g_vga_elf_data  = 0;
-uint32_t       g_vga_elf_size  = 0;
+const uint8_t *g_init_elf_data  = 0;
+uint32_t       g_init_elf_size  = 0;
+const uint8_t *g_kbd_elf_data   = 0;
+uint32_t       g_kbd_elf_size   = 0;
+const uint8_t *g_vga_elf_data   = 0;
+uint32_t       g_vga_elf_size   = 0;
+/* ★ S5.5 */
+const uint8_t *g_mouse_elf_data = 0;
+uint32_t       g_mouse_elf_size = 0;
 
 #define MULTIBOOT_BOOTLOADER_MAGIC  0x2BADB002
 
@@ -313,6 +304,18 @@ static void materialize_modules_into_nxfs(void) {
                 vfs_fd_write(fd, g_vga_elf_data, g_vga_elf_size);
                 vfs_close(fd);
                 vga_puts("[OK] vga.elf written into NXFS\n");
+            }
+        }
+    }
+
+    /* ★ S5.5 */
+    if (g_mouse_elf_data && g_mouse_elf_size > 0) {
+        if (!vfs_lookup("/system/drive/mouse.elf")) {
+            int fd = vfs_open("/system/drive/mouse.elf", O_CREAT | O_TRUNC);
+            if (fd >= 0) {
+                vfs_fd_write(fd, g_mouse_elf_data, g_mouse_elf_size);
+                vfs_close(fd);
+                vga_puts("[OK] mouse.elf written into NXFS\n");
             }
         }
     }
@@ -443,6 +446,18 @@ void kmain(uint32_t magic, uint32_t mbi) {
                 g_vga_elf_size = ve - vs;
                 vga_puts("[OK] vga.elf from GRUB module, size=");
                 vga_hex(g_vga_elf_size);
+                vga_puts("\n");
+            }
+        }
+
+        /* ★ S5.5 */
+        uint32_t ms2 = 0, me2 = 0;
+        if (mb_module_find(mbi, "mouse.elf", &ms2, &me2) == 0) {
+            if (ms2 != 0 && me2 > ms2) {
+                g_mouse_elf_data = (const uint8_t *)ms2;
+                g_mouse_elf_size = me2 - ms2;
+                vga_puts("[OK] mouse.elf from GRUB module, size=");
+                vga_hex(g_mouse_elf_size);
                 vga_puts("\n");
             }
         }

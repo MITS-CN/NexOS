@@ -13,7 +13,7 @@
 #include "install.h"
 #include "gdt.h"
 #include "irq.h"
-#include "io.h"      /* ★ S5.5: inb / outb */
+#include "io.h"
 #include <stdint.h>
 
 extern int  vga_get_owner(void);
@@ -48,7 +48,8 @@ extern int  vga_get_cursor(void);
 #define SYS_EXEC_BG        25
 #define SYS_VGA_CLAIM      26
 #define SYS_VGA_GET_CURSOR 27
-#define SYS_MOUSE_ENABLE   28   /* ★ S5.5 */
+#define SYS_MOUSE_ENABLE   28
+#define SYS_VGA_GET_OWNER  29   /* ★ S5.5 2d */
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -78,28 +79,19 @@ static int user_str_ok(const char *s, uint32_t maxlen) {
     return 0;
 }
 
-/* ★ S5.5: 向鼠标（辅助端口）发 0xF4，开始数据上报。
-   由 mouse.elf 在注册 IRQ12 之后调用。 */
 static void mouse_enable_reporting(void) {
-    /* 等 input buffer 空 */
     for (int i = 0; i < 100000; i++) {
         if (!(inb(0x64) & 0x02)) break;
     }
     outb(0x64, 0xD4);
-
-    /* 等 input buffer 空 */
     for (int i = 0; i < 100000; i++) {
         if (!(inb(0x64) & 0x02)) break;
     }
     outb(0x60, 0xF4);
-
-    /* 吃掉 ACK 0xFA */
     for (int i = 0; i < 100000; i++) {
         if (inb(0x64) & 0x01) break;
     }
     if (inb(0x64) & 0x01) inb(0x60);
-
-    /* 清残留（可能还有别的字节） */
     for (int i = 0; i < 64; i++) {
         if (!(inb(0x64) & 0x01)) break;
         inb(0x60);
@@ -246,12 +238,15 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
         case SYS_VGA_GET_CURSOR:
             return vga_get_cursor();
 
-        /* ★ S5.5: 让鼠标开始上报数据 */
         case SYS_MOUSE_ENABLE: {
             if (!current_thread || !current_thread->is_user) return -1;
             mouse_enable_reporting();
             return 0;
         }
+
+        /* ★ S5.5 2d: 任何用户进程都能查 vga owner tid */
+        case SYS_VGA_GET_OWNER:
+            return vga_get_owner();
 
         case SYS_SEND: {
             int tid = (int)a;

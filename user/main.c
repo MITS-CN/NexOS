@@ -6,14 +6,14 @@
 
 #define USER_VGA_BASE 0x10000000u
 
-/* ★ 命令缓冲区：128 → 512 */
 static char cmd[512];
 static int  cmd_len = 0;
 static char cat_buf[256];
 static char cwd[MAX_PATH] = "/";
 
-static int  g_kbd_tid = -1;
-static int  g_vga_tid = -1;
+static int  g_kbd_tid   = -1;
+static int  g_vga_tid   = -1;
+static int  g_mouse_tid = -1;
 
 static void putc_(char c) { sys_putchar(c); }
 static void puts_(const char *s) { while (*s) putc_(*s++); }
@@ -142,6 +142,20 @@ static void restart_vga(void) {
     putc_('\n');
 }
 
+static void restart_mouse(void) {
+    g_mouse_tid = sys_exec_bg("/system/drive/mouse.elf");
+    if (g_mouse_tid < 0) {
+        puts_("[shell] restart mouse.elf FAILED, code=");
+        print_dec(-g_mouse_tid);
+        putc_('\n');
+        return;
+    }
+
+    puts_("[shell] mouse.elf started, tid=");
+    print_dec(g_mouse_tid);
+    putc_('\n');
+}
+
 static void cmd_help(void) {
     puts_("Commands:\n");
     puts_("  help            - show this\n");
@@ -171,6 +185,8 @@ static void cmd_help(void) {
     puts_("  kbdtid          - show current kbd.elf tid\n");
     puts_("  killvga         - S5 test: kill vga.elf, watch it restart\n");
     puts_("  vgatid          - show current vga.elf tid\n");
+    puts_("  killmouse       - S5.5 test: kill mouse.elf, watch it restart\n");
+    puts_("  mousetid        - show current mouse.elf tid\n");
 }
 
 static void cmd_pwd(void) {
@@ -548,7 +564,7 @@ static void cmd_install(const char *args) {
     puts_("install: target drive ");
     putc_('0' + drive);
     puts_("\n");
-    puts_("install: writing boot + kernel + NXFS + init.elf + kbd.elf + vga.elf...\n");
+    puts_("install: writing boot + kernel + NXFS + 4 ELFs...\n");
 
     int r = sys_install(drive);
     if (r < 0) {
@@ -774,6 +790,29 @@ static void cmd_vgatid(void) {
     putc_('\n');
 }
 
+static void cmd_killmouse(void) {
+    if (g_mouse_tid < 0) {
+        puts_("killmouse: no mouse.elf running\n");
+        return;
+    }
+
+    puts_("killmouse: sending MSG_EXIT to tid=");
+    print_dec(g_mouse_tid);
+    putc_('\n');
+
+    user_msg_t m;
+    m.sender  = 0;
+    m.type    = MSG_EXIT;
+    for (int i = 0; i < 8; i++) m.data[i] = 0;
+    sys_send(g_mouse_tid, &m);
+}
+
+static void cmd_mousetid(void) {
+    puts_("mouse.elf tid = ");
+    print_dec(g_mouse_tid);
+    putc_('\n');
+}
+
 static int read_char(void) {
     user_msg_t m;
     for (;;) {
@@ -781,11 +820,17 @@ static int read_char(void) {
 
         if (m.type == MSG_CHAR) return (int)m.data[0];
 
-        if (m.type == MSG_IRQ_OWNER_DIED &&
-            (int)m.data[0] == 1) {
-            putc_('\n');
-            puts_("[shell] kbd.elf died (IRQ1 released), restarting...\n");
-            restart_kbd();
+        if (m.type == MSG_IRQ_OWNER_DIED) {
+            int irq = (int)m.data[0];
+            if (irq == 1) {
+                putc_('\n');
+                puts_("[shell] kbd.elf died (IRQ1 released), restarting...\n");
+                restart_kbd();
+            } else if (irq == 12) {
+                putc_('\n');
+                puts_("[shell] mouse.elf died (IRQ12 released), restarting...\n");
+                restart_mouse();
+            }
             continue;
         }
 
@@ -839,6 +884,8 @@ static void run_cmd(void) {
     else if (str_eq(p, "kbdtid")) cmd_kbdtid();
     else if (str_eq(p, "killvga")) cmd_killvga();
     else if (str_eq(p, "vgatid")) cmd_vgatid();
+    else if (str_eq(p, "killmouse")) cmd_killmouse();
+    else if (str_eq(p, "mousetid")) cmd_mousetid();
     else { puts_("unknown: "); puts_(p); putc_('\n'); }
 
     cmd_len = 0;
@@ -852,6 +899,9 @@ int main(void) {
 
     puts_("Starting keyboard driver (/system/drive/kbd.elf)...\n");
     restart_kbd();
+
+    puts_("Starting mouse driver (/system/drive/mouse.elf)...\n");
+    restart_mouse();
 
     puts_("Type 'help' for commands.\n\n");
 
@@ -872,7 +922,6 @@ int main(void) {
                     putc_('\b');
                 }
             } else if (c >= 32 && c < 127) {
-                /* ★ 上限 128 → 512 */
                 if (cmd_len < 511) {
                     cmd[cmd_len++] = (char)c;
                     putc_((char)c);

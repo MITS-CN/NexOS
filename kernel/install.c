@@ -91,25 +91,29 @@ static int write_data_block(int drv, uint32_t block, const uint8_t *data) {
 }
 
 static int write_nxfs(int drv) {
-    uint32_t init_size = g_init_elf_size;
-    uint32_t kbd_size  = g_kbd_elf_size;
-    uint32_t vga_size  = g_vga_elf_size;
-    if (!g_init_elf_data || init_size == 0) return -1;
-    if (!g_kbd_elf_data  || kbd_size  == 0) return -1;
-    if (!g_vga_elf_data  || vga_size  == 0) return -1;
+    uint32_t init_size  = g_init_elf_size;
+    uint32_t kbd_size   = g_kbd_elf_size;
+    uint32_t vga_size   = g_vga_elf_size;
+    uint32_t mouse_size = g_mouse_elf_size;
+    if (!g_init_elf_data  || init_size  == 0) return -1;
+    if (!g_kbd_elf_data   || kbd_size   == 0) return -1;
+    if (!g_vga_elf_data   || vga_size   == 0) return -1;
+    if (!g_mouse_elf_data || mouse_size == 0) return -1;
 
-    uint32_t init_blocks = (init_size + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
-    uint32_t kbd_blocks  = (kbd_size  + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
-    uint32_t vga_blocks  = (vga_size  + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
+    uint32_t init_blocks  = (init_size  + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
+    uint32_t kbd_blocks   = (kbd_size   + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
+    uint32_t vga_blocks   = (vga_size   + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
+    uint32_t mouse_blocks = (mouse_size + NXFS_BLOCK_SIZE - 1) / NXFS_BLOCK_SIZE;
 
-    uint32_t init_first = 4;
-    uint32_t kbd_first  = init_first + init_blocks;
-    uint32_t vga_first  = kbd_first + kbd_blocks;
-    uint32_t total_used = vga_first + vga_blocks;
+    uint32_t init_first  = 4;
+    uint32_t kbd_first   = init_first  + init_blocks;
+    uint32_t vga_first   = kbd_first   + kbd_blocks;
+    uint32_t mouse_first = vga_first   + vga_blocks;
+    uint32_t total_used  = mouse_first + mouse_blocks;
 
     if (total_used > 128) return -1;
 
-    /* 4a. 超级块 */
+    /* 超级块 */
     uint8_t sb[512];
     for (int i = 0; i < 512; i++) sb[i] = 0;
     uint32_t *s = (uint32_t *)sb;
@@ -123,7 +127,7 @@ static int write_nxfs(int drv) {
     s[7] = 0;
     if (ata_write_sectors_ex(drv, NXFS_PART_LBA + 1, 1, sb) < 0) return -1;
 
-    /* 4b. FAT 清零 */
+    /* FAT 清零 */
     uint8_t zero512[512];
     for (int i = 0; i < 512; i++) zero512[i] = 0;
     for (uint32_t i = 0; i < 64; i++) {
@@ -131,7 +135,7 @@ static int write_nxfs(int drv) {
             return -1;
     }
 
-    /* 4c. FAT 第一扇区 */
+    /* FAT 第一扇区 */
     uint8_t fat_sec[512];
     for (int i = 0; i < 512; i++) fat_sec[i] = 0;
     uint32_t *t32 = (uint32_t *)fat_sec;
@@ -150,11 +154,15 @@ static int write_nxfs(int drv) {
         uint32_t b = vga_first + i;
         t32[b] = (i == vga_blocks - 1) ? 0xFFFFFFFFu : (b + 1);
     }
+    for (uint32_t i = 0; i < mouse_blocks; i++) {
+        uint32_t b = mouse_first + i;
+        t32[b] = (i == mouse_blocks - 1) ? 0xFFFFFFFFu : (b + 1);
+    }
 
     if (ata_write_sectors_ex(drv, NXFS_PART_LBA + 2, 1, fat_sec) < 0)
         return -1;
 
-    /* 4d. 目录块 */
+    /* 目录块 */
     uint8_t blk[NXFS_BLOCK_SIZE];
 
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
@@ -171,49 +179,23 @@ static int write_nxfs(int drv) {
     if (write_data_block(drv, 2, blk) < 0) return -1;
 
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
-    set_dirent(blk, 0, "kbd.elf", 1, kbd_size, kbd_first);
-    set_dirent(blk, 1, "vga.elf", 1, vga_size, vga_first);
+    set_dirent(blk, 0, "kbd.elf",   1, kbd_size,   kbd_first);
+    set_dirent(blk, 1, "vga.elf",   1, vga_size,   vga_first);
+    set_dirent(blk, 2, "mouse.elf", 1, mouse_size, mouse_first);
     if (write_data_block(drv, 3, blk) < 0) return -1;
 
-    /* 4e. init.elf */
-    {
-        const uint8_t *p = g_init_elf_data;
-        uint32_t remaining = init_size;
-        uint32_t blk_no = init_first;
-        while (remaining > 0) {
-            uint32_t take = remaining > NXFS_BLOCK_SIZE
-                          ? NXFS_BLOCK_SIZE : remaining;
-            for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
-            for (uint32_t i = 0; i < take; i++) blk[i] = p[i];
-            if (write_data_block(drv, blk_no, blk) < 0) return -1;
-            p += take;
-            remaining -= take;
-            blk_no++;
-        }
-    }
+    /* 四个 ELF 数据 */
+    struct { const uint8_t *p; uint32_t size; uint32_t first; } jobs[4] = {
+        { g_init_elf_data,  init_size,  init_first  },
+        { g_kbd_elf_data,   kbd_size,   kbd_first   },
+        { g_vga_elf_data,   vga_size,   vga_first   },
+        { g_mouse_elf_data, mouse_size, mouse_first },
+    };
 
-    /* 4f. kbd.elf */
-    {
-        const uint8_t *p = g_kbd_elf_data;
-        uint32_t remaining = kbd_size;
-        uint32_t blk_no = kbd_first;
-        while (remaining > 0) {
-            uint32_t take = remaining > NXFS_BLOCK_SIZE
-                          ? NXFS_BLOCK_SIZE : remaining;
-            for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
-            for (uint32_t i = 0; i < take; i++) blk[i] = p[i];
-            if (write_data_block(drv, blk_no, blk) < 0) return -1;
-            p += take;
-            remaining -= take;
-            blk_no++;
-        }
-    }
-
-    /* 4g. vga.elf */
-    {
-        const uint8_t *p = g_vga_elf_data;
-        uint32_t remaining = vga_size;
-        uint32_t blk_no = vga_first;
+    for (int j = 0; j < 4; j++) {
+        const uint8_t *p = jobs[j].p;
+        uint32_t remaining = jobs[j].size;
+        uint32_t blk_no = jobs[j].first;
         while (remaining > 0) {
             uint32_t take = remaining > NXFS_BLOCK_SIZE
                           ? NXFS_BLOCK_SIZE : remaining;
@@ -231,9 +213,10 @@ static int write_nxfs(int drv) {
 
 int install_to_drive(int drive) {
     if (!installer_mode) return -100;
-    if (!g_init_elf_data || g_init_elf_size == 0) return -1;
-    if (!g_kbd_elf_data  || g_kbd_elf_size  == 0) return -1;
-    if (!g_vga_elf_data  || g_vga_elf_size  == 0) return -1;
+    if (!g_init_elf_data  || g_init_elf_size  == 0) return -1;
+    if (!g_kbd_elf_data   || g_kbd_elf_size   == 0) return -1;
+    if (!g_vga_elf_data   || g_vga_elf_size   == 0) return -1;
+    if (!g_mouse_elf_data || g_mouse_elf_size == 0) return -1;
 
     if (write_stage1(drive) < 0) return -2;
     if (write_stage2(drive) < 0) return -3;

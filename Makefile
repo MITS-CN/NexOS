@@ -75,12 +75,18 @@ build/kbd_main.o: user/kbd.c | build
 build/kbd.elf: build/user_start.o build/kbd_main.o user/user.ld
 	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/kbd_main.o
 
-# ★ S5
 build/vga_main.o: user/vga.c | build
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 build/vga.elf: build/user_start.o build/vga_main.o user/user.ld
 	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/vga_main.o
+
+# ★ S5.5
+build/mouse_main.o: user/mouse.c | build
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+build/mouse.elf: build/user_start.o build/mouse_main.o user/user.ld
+	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/mouse_main.o
 
 # ============================================================
 # 内核 ELF
@@ -106,12 +112,13 @@ build/stage1.bin: boot/stage1.asm | build
 build/stage2.bin: boot/stage2.asm | build
 	nasm -f bin -o $@ $<
 
-build/NexOS-NEXT.iso: build/NexOS-NEXT.elf build/init.elf build/kbd.elf build/vga.elf grub.cfg
+build/NexOS-NEXT.iso: build/NexOS-NEXT.elf build/init.elf build/kbd.elf build/vga.elf build/mouse.elf grub.cfg
 	mkdir -p build/iso/boot/grub
 	cp build/NexOS-NEXT.elf build/iso/boot/
 	cp build/init.elf       build/iso/boot/
 	cp build/kbd.elf        build/iso/boot/
 	cp build/vga.elf        build/iso/boot/
+	cp build/mouse.elf      build/iso/boot/
 	cp grub.cfg build/iso/boot/grub/
 	grub-mkrescue -o $@ build/iso
 
@@ -135,12 +142,12 @@ $(IMAGE_DIR)/disk2.img: | $(IMAGE_DIR)
 tools/mknxfs: tools/mknxfs.c
 	$(CC) -O2 -o $@ $<
 
-# ★ S5: 三个 ELF
-$(NXFS_IMG): build/init.elf build/kbd.elf build/vga.elf tools/mknxfs | build
+$(NXFS_IMG): build/init.elf build/kbd.elf build/vga.elf build/mouse.elf tools/mknxfs | build
 	./tools/mknxfs $@ \
 	    build/init.elf:system/init/init.elf \
 	    build/kbd.elf:system/drive/kbd.elf \
-	    build/vga.elf:system/drive/vga.elf
+	    build/vga.elf:system/drive/vga.elf \
+	    build/mouse.elf:system/drive/mouse.elf
 
 clean:
 	rm -rf build
