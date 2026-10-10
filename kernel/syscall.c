@@ -379,7 +379,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return part_set_entry(drive, index, &ent);
         }
 
-        /* ★ S7a: a=path, b=argc, c=argv (用户态指针数组) */
         case SYS_EXEC: {
             if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
 
@@ -389,7 +388,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             while (upath[i] && i < MAX_PATH - 1) { kpath[i] = upath[i]; i++; }
             kpath[i] = 0;
 
-            /* 拷贝 argv 到内核栈 */
             int argc = (int)b;
             if (argc < 0 || argc > 16) return -1;
 
@@ -428,7 +426,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             kfree(buf);
             if (r != 0) return -7;
 
-            /* ★ 写 argv；没传就默认 esp = stack_top - 4（读到的 argc = 0） */
             uint32_t entry_esp = elf.stack_top - 4;
             if (argc > 0) {
                 if (elf_setup_argv(dir, elf.stack_top, argc, kargv,
@@ -448,6 +445,7 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return t->id;
         }
 
+        /* ★ S7b: 后台 exec，带 argv；父进程不阻塞 */
         case SYS_EXEC_BG: {
             if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
 
@@ -456,6 +454,23 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             int i = 0;
             while (upath[i] && i < MAX_PATH - 1) { kpath[i] = upath[i]; i++; }
             kpath[i] = 0;
+
+            int argc = (int)b;
+            if (argc < 0 || argc > 16) return -1;
+
+            char kargv_buf[16][128];
+            const char *kargv[17];
+            for (int k = 0; k < argc; k++) {
+                if (!user_range_ok(c + (uint32_t)k * 4, 4)) return -1;
+                uint32_t up = *(uint32_t *)(c + (uint32_t)k * 4);
+                if (!user_str_ok((const char *)up, 128)) return -1;
+                const char *us = (const char *)up;
+                int j = 0;
+                while (us[j] && j < 127) { kargv_buf[k][j] = us[j]; j++; }
+                kargv_buf[k][j] = 0;
+                kargv[k] = kargv_buf[k];
+            }
+            kargv[argc] = 0;
 
             int fd = vfs_open(kpath, 0);
             if (fd < 0) return -2;
@@ -478,12 +493,20 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             kfree(buf);
             if (r != 0) return -7;
 
+            uint32_t entry_esp = elf.stack_top - 4;
+            if (argc > 0) {
+                if (elf_setup_argv(dir, elf.stack_top, argc, kargv,
+                                   &entry_esp) != 0)
+                    return -9;
+            }
+
             thread_t *t = thread_create_elf(elf.entry, elf.stack_top, dir,
-                                            elf.stack_top - 4);
+                                            entry_esp);
             if (!t) return -8;
 
             t->prev_owner = current_thread;
 
+            /* 后台：不阻塞父进程 */
             return t->id;
         }
 

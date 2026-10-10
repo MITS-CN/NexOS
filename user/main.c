@@ -236,7 +236,7 @@ static void resolve_path(const char *in, char *out, int out_size) {
 }
 
 static void restart_kbd(void) {
-    g_kbd_tid = sys_exec_bg("/system/drive/kbd.elf");
+    g_kbd_tid = sys_exec_bg("/system/drive/kbd.elf", 0, 0);
     if (g_kbd_tid < 0) {
         puts_("[shell] restart kbd.elf FAILED, code=");
         print_dec(-g_kbd_tid);
@@ -256,7 +256,7 @@ static void restart_kbd(void) {
 }
 
 static void restart_vga(void) {
-    g_vga_tid = sys_exec_bg("/system/drive/vga.elf");
+    g_vga_tid = sys_exec_bg("/system/drive/vga.elf", 0, 0);
     if (g_vga_tid < 0) {
         puts_("[shell] restart vga.elf FAILED, code=");
         print_dec(-g_vga_tid);
@@ -270,7 +270,7 @@ static void restart_vga(void) {
 }
 
 static void restart_mouse(void) {
-    g_mouse_tid = sys_exec_bg("/system/drive/mouse.elf");
+    g_mouse_tid = sys_exec_bg("/system/drive/mouse.elf", 0, 0);
     if (g_mouse_tid < 0) {
         puts_("[shell] restart mouse.elf FAILED, code=");
         print_dec(-g_mouse_tid);
@@ -284,7 +284,7 @@ static void restart_mouse(void) {
 }
 
 static void restart_atad(void) {
-    g_atad_tid = sys_exec_bg("/system/drive/atad.elf");
+    g_atad_tid = sys_exec_bg("/system/drive/atad.elf", 0, 0);
     if (g_atad_tid < 0) {
         puts_("[shell] restart atad.elf FAILED, code=");
         print_dec(-g_atad_tid);
@@ -322,20 +322,16 @@ static void cmd_help(void) {
     puts_("  exit            - exit shell\n");
     puts_("  part            - list partition table\n");
     puts_("  cp <src> <dst>  - copy file\n");
-    puts_("  install [0|1]   - install system to disk (0=master, 1=slave)\n");
-    puts_("  exec P [A1 A2..]- load and run ELF with argv\n");
-    puts_("  mkpart N T S C  - create partition N: type T, start LBA S, sectors C\n");
-    puts_("  ioperm          - S1 test: request VGA I/O port 0x3D4/0x3D5\n");
-    puts_("  vgatest         - S2 test: read/write VGA MMIO from user mode\n");
+    puts_("  install [0|1]   - install system to disk\n");
+    puts_("  exec P [A1..] [&] - run ELF; & = background\n");
+    puts_("  mkpart N T S C  - create partition\n");
+    puts_("  ioperm          - S1 test: VGA I/O\n");
+    puts_("  vgatest         - S2 test: VGA MMIO\n");
     puts_("  irqtest         - S3 test: claim IRQ1\n");
-    puts_("  killkbd         - S4.6.2 test: kill kbd.elf\n");
-    puts_("  kbdtid          - show current kbd.elf tid\n");
-    puts_("  killvga         - S5 test: kill vga.elf\n");
-    puts_("  vgatid          - show current vga.elf tid\n");
-    puts_("  killmouse       - S5.5 test: kill mouse.elf\n");
-    puts_("  mousetid        - show current mouse.elf tid\n");
-    puts_("  killatad        - S6 test: kill atad.elf\n");
-    puts_("  atadtid         - show current atad.elf tid\n");
+    puts_("  killkbd/kbdtid  - kbd.elf control\n");
+    puts_("  killvga/vgatid  - vga.elf control\n");
+    puts_("  killmouse/mousetid - mouse.elf control\n");
+    puts_("  killatad/atadtid   - atad.elf control\n");
     puts_("  keys: Up/Down = history, Ctrl+C = cancel input\n");
 }
 
@@ -731,7 +727,7 @@ static void cmd_install(const char *args) {
     puts_("install: done.\n");
 }
 
-/* ★ S7a: exec <path> [args...] */
+/* ★ S7b: exec <path> [args...] [&] */
 static void cmd_exec(const char *args) {
     if (!args || !*args) { puts_("exec: missing arg\n"); return; }
 
@@ -745,7 +741,6 @@ static void cmd_exec(const char *args) {
     char path[MAX_PATH];
     resolve_path(word, path, MAX_PATH);
 
-    /* 解析 argv：argv[0] = 解析后的路径 */
     static char argv_buf[16][MAX_PATH];
     static const char *argv[17];
     int argc = 0;
@@ -758,7 +753,6 @@ static void cmd_exec(const char *args) {
     argv_buf[0][i] = 0;
     argv[argc++] = argv_buf[0];
 
-    /* 跳过后面的空格，逐个解析参数 */
     const char *p = args;
     while (*p && *p != ' ') p++;
     while (*p == ' ') p++;
@@ -775,20 +769,44 @@ static void cmd_exec(const char *args) {
     }
     argv[argc] = 0;
 
-    puts_("exec: loading "); puts_(path); puts_("\n");
-
-    int tid = sys_exec(path, argc, argv);
-
-    if (tid < 0) {
-        puts_("exec: failed, code=");
-        char b[4] = { '0' + ((-tid) % 10), '\n', 0, 0 };
-        puts_(b);
-        return;
+    /* ★ S7b: 检查最后一个 token 是不是 "&" */
+    int background = 0;
+    if (argc >= 2) {
+        const char *last = argv[argc - 1];
+        if (last[0] == '&' && last[1] == 0) {
+            background = 1;
+            argc--;
+            argv[argc] = 0;
+        }
     }
 
-    puts_("exec: child exited, tid=");
-    char b[4] = { '0' + (tid % 10), '\n', 0, 0 };
-    puts_(b);
+    puts_("exec: loading "); puts_(path);
+    if (background) puts_(" (background)");
+    puts_("\n");
+
+    if (background) {
+        int tid = sys_exec_bg(path, argc, argv);
+        if (tid < 0) {
+            puts_("exec: bg failed, code=");
+            char b[4] = { '0' + ((-tid) % 10), '\n', 0, 0 };
+            puts_(b);
+            return;
+        }
+        puts_("exec: background started, tid=");
+        print_dec(tid);
+        putc_('\n');
+    } else {
+        int tid = sys_exec(path, argc, argv);
+        if (tid < 0) {
+            puts_("exec: failed, code=");
+            char b[4] = { '0' + ((-tid) % 10), '\n', 0, 0 };
+            puts_(b);
+            return;
+        }
+        puts_("exec: child exited, tid=");
+        print_dec(tid);
+        putc_('\n');
+    }
 }
 
 static void cmd_mem(void) {
@@ -1070,9 +1088,7 @@ static void run_cmd(void) {
     cmd_len = 0;
 }
 
-/* ★ S7a: main 接受 argc/argv */
 int main(int argc, char **argv) {
-    /* 参数模式：exec 出来的子进程只打印 argv，然后退出 */
     if (argc > 0) {
         puts_("=== argv test ===\n");
         puts_("argc = ");

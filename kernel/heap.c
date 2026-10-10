@@ -7,9 +7,9 @@
 #define BLOCK_MAGIC   0x4E78534F
 
 typedef struct block {
-    uint32_t      size;    /* 总大小，含头部 */
+    uint32_t      size;
     uint32_t      magic;
-    uint32_t      free;    /* 0=已用, 1=空闲 */
+    uint32_t      free;
     struct block *next;
 } __attribute__((packed)) block_t;
 
@@ -23,12 +23,23 @@ static void heap_grow(void) {
 
     uint32_t virt = HEAP_START + heap_mapped;
 
+    uint32_t *kdir = paging_kernel_dir();
+    uint32_t *cdir = paging_get_dir();
+
     for (int i = 0; i < HEAP_GROW_PAGES; i++) {
         void *phys = pmm_alloc_page();
         if (!phys) return;
 
-        /* 内核堆：只允许 ring 0 访问，不加 PAGE_USER */
-        paging_map(virt + i * PAGE_SIZE, (uint32_t)phys, PAGE_RW);
+        uint32_t va = virt + i * PAGE_SIZE;
+
+        /* ★ 关键修复：堆页必须同时进 kernel_dir 和 current_dir
+           —— kernel_dir 是 paging_create_dir 的复制源 */
+        paging_map_in(kdir, va, (uint32_t)phys, PAGE_RW);
+        if (cdir != kdir)
+            paging_map_in(cdir, va, (uint32_t)phys, PAGE_RW);
+
+        /* 当前地址空间需要刷 TLB */
+        __asm__ volatile("invlpg (%0)" :: "r"(va) : "memory");
     }
 
     block_t *nb = (block_t *)virt;

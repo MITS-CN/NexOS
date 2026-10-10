@@ -217,7 +217,6 @@ static inline void sys_yield(void) {
         : "ebx", "ecx", "edx", "esi", "edi", "memory");
 }
 
-/* ★ S7a: sys_exec 带 argc/argv */
 static inline int sys_exec(const char *path, int argc,
                            const char *const *argv) {
     int r;
@@ -282,12 +281,14 @@ static inline int sys_send(int tid, const user_msg_t *m) {
     return r;
 }
 
-static inline int sys_exec_bg(const char *path) {
+/* ★ S7b: 后台 exec 也带 argc/argv */
+static inline int sys_exec_bg(const char *path, int argc,
+                              const char *const *argv) {
     int r;
     __asm__ volatile("int $0x80"
         : "=a"(r)
-        : "0"(25), "b"(path)
-        : "ecx", "edx", "esi", "edi", "memory");
+        : "0"(25), "b"(path), "c"(argc), "d"(argv)
+        : "esi", "edi", "memory");
     return r;
 }
 
