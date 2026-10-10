@@ -17,7 +17,7 @@
 #define MSG_SCROLL         0x304
 #define MSG_SIGINT         0x305
 #define MSG_ATA_REQ        0x400
-#define MSG_ATA_OWNER_DIED 0x401   /* ★ S6d */
+#define MSG_ATA_OWNER_DIED 0x401
 
 typedef enum { THREAD_READY, THREAD_BLOCKED, THREAD_DEAD } thread_state_t;
 
@@ -40,6 +40,7 @@ typedef struct thread {
     uint32_t      *kernel_stack;
     uint32_t      *user_stack;
     void         (*entry)(void);
+    uint32_t       entry_esp;    /* ★ S7a: 用户态入口 esp（含 argv） */
     int            id;
     int            state;
     int            is_user;
@@ -52,7 +53,8 @@ typedef struct thread {
 
 thread_t *thread_create(void (*entry)(void));
 thread_t *thread_create_user(void (*entry)(void));
-thread_t *thread_create_elf(uint32_t entry, uint32_t stack_top, uint32_t *page_dir);
+thread_t *thread_create_elf(uint32_t entry, uint32_t stack_top,
+                            uint32_t *page_dir, uint32_t entry_esp);
 void      thread_init(void);
 
 extern thread_t *current_thread;

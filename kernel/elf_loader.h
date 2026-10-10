@@ -8,11 +8,13 @@ typedef struct {
     uint32_t stack_top;
 } elf_load_result_t;
 
-/* 加载到当前页目录 */
 int elf_load(const void *elf_data, uint32_t elf_size, elf_load_result_t *out);
 
-/* 加载到指定页目录（B2 新增） */
 int elf_load_to_dir(uint32_t *dir, const void *elf_data, uint32_t elf_size,
                     elf_load_result_t *out);
+
+/* ★ S7a: 把 argv 写进新进程用户栈 */
+int elf_setup_argv(uint32_t *dir, uint32_t stack_top, int argc,
+                   const char *const *argv, uint32_t *out_esp);
 
 #endif

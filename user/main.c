@@ -323,7 +323,7 @@ static void cmd_help(void) {
     puts_("  part            - list partition table\n");
     puts_("  cp <src> <dst>  - copy file\n");
     puts_("  install [0|1]   - install system to disk (0=master, 1=slave)\n");
-    puts_("  exec <path>     - load and run ELF\n");
+    puts_("  exec P [A1 A2..]- load and run ELF with argv\n");
     puts_("  mkpart N T S C  - create partition N: type T, start LBA S, sectors C\n");
     puts_("  ioperm          - S1 test: request VGA I/O port 0x3D4/0x3D5\n");
     puts_("  vgatest         - S2 test: read/write VGA MMIO from user mode\n");
@@ -731,11 +731,13 @@ static void cmd_install(const char *args) {
     puts_("install: done.\n");
 }
 
+/* ★ S7a: exec <path> [args...] */
 static void cmd_exec(const char *args) {
     if (!args || !*args) { puts_("exec: missing arg\n"); return; }
 
     char word[MAX_PATH];
-    if (take_word(args, word, MAX_PATH) == 0) {
+    int used = take_word(args, word, MAX_PATH);
+    if (used == 0) {
         puts_("exec: missing arg\n");
         return;
     }
@@ -743,9 +745,39 @@ static void cmd_exec(const char *args) {
     char path[MAX_PATH];
     resolve_path(word, path, MAX_PATH);
 
+    /* 解析 argv：argv[0] = 解析后的路径 */
+    static char argv_buf[16][MAX_PATH];
+    static const char *argv[17];
+    int argc = 0;
+
+    int i = 0;
+    while (path[i] && i < MAX_PATH - 1) {
+        argv_buf[0][i] = path[i];
+        i++;
+    }
+    argv_buf[0][i] = 0;
+    argv[argc++] = argv_buf[0];
+
+    /* 跳过后面的空格，逐个解析参数 */
+    const char *p = args;
+    while (*p && *p != ' ') p++;
+    while (*p == ' ') p++;
+
+    while (*p && argc < 16) {
+        int n = 0;
+        while (*p && *p != ' ' && n < MAX_PATH - 1) {
+            argv_buf[argc][n++] = *p++;
+        }
+        argv_buf[argc][n] = 0;
+        argv[argc] = argv_buf[argc];
+        argc++;
+        while (*p == ' ') p++;
+    }
+    argv[argc] = 0;
+
     puts_("exec: loading "); puts_(path); puts_("\n");
 
-    int tid = sys_exec(path);
+    int tid = sys_exec(path, argc, argv);
 
     if (tid < 0) {
         puts_("exec: failed, code=");
@@ -950,7 +982,6 @@ static void cmd_atadtid(void) {
     puts_("atad.elf tid = "); print_dec(g_atad_tid); putc_('\n');
 }
 
-/* ★ S6d: MSG_ATA_OWNER_DIED → restart_atad */
 static int read_char(void) {
     user_msg_t m;
     for (;;) {
@@ -1039,7 +1070,26 @@ static void run_cmd(void) {
     cmd_len = 0;
 }
 
-int main(void) {
+/* ★ S7a: main 接受 argc/argv */
+int main(int argc, char **argv) {
+    /* 参数模式：exec 出来的子进程只打印 argv，然后退出 */
+    if (argc > 0) {
+        puts_("=== argv test ===\n");
+        puts_("argc = ");
+        print_dec(argc);
+        putc_('\n');
+        for (int i = 0; i < argc; i++) {
+            puts_("argv[");
+            putc_('0' + (i % 10));
+            puts_("] = ");
+            if (argv[i]) puts_(argv[i]);
+            else         puts_("(null)");
+            putc_('\n');
+        }
+        puts_("=================\n");
+        sys_exit();
+    }
+
     puts_("NexOS-NEXT Shell v0.5\n");
 
     ensure_hist_dirs();

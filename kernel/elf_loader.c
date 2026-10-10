@@ -92,7 +92,6 @@ int elf_load(const void *elf_data, uint32_t elf_size, elf_load_result_t *out) {
         }
     }
 
-    /* 用户栈 */
     uint32_t stack_bottom = USER_STACK_TOP - USER_STACK_SIZE;
     for (uint32_t va = stack_bottom; va < USER_STACK_TOP; va += PAGE_SIZE) {
         void *phys = pmm_alloc_page();
@@ -106,6 +105,7 @@ int elf_load(const void *elf_data, uint32_t elf_size, elf_load_result_t *out) {
     out->stack_top = USER_STACK_TOP;
     return 0;
 }
+
 int elf_load_to_dir(uint32_t *dir, const void *elf_data, uint32_t elf_size,
                     elf_load_result_t *out) {
     if (!dir) return -1;
@@ -115,4 +115,69 @@ int elf_load_to_dir(uint32_t *dir, const void *elf_data, uint32_t elf_size,
     int r = elf_load(elf_data, elf_size, out);
     paging_switch_dir(old);
     return r;
+}
+
+/* ★ S7a: 把 argv 字符串 + 指针数组写到新进程用户栈
+   布局（高地址 → 低地址）：
+     [argv[n-1] 字符串]
+     ...
+     [argv[0] 字符串]
+     [argv[n-1] 指针]
+     ...
+     [argv[0] 指针]
+     [NULL]
+     [argc]            ← esp 指向这里
+*/
+int elf_setup_argv(uint32_t *dir, uint32_t stack_top, int argc,
+                   const char *const *argv, uint32_t *out_esp) {
+    if (!dir || argc < 0 || argc > 16) return -1;
+
+    uint32_t str_size = 0;
+    for (int i = 0; i < argc; i++) {
+        const char *s = argv[i];
+        if (!s) return -2;
+        uint32_t l = 0;
+        while (s[l]) l++;
+        str_size += l + 1;
+    }
+    str_size = (str_size + 3) & ~3u;
+
+    uint32_t arr_size = (uint32_t)(argc + 1) * 4;
+    uint32_t total    = str_size + arr_size + 4;
+
+    if (total > 32 * 1024) return -3;
+
+    uint32_t esp = stack_top - total;
+    esp &= ~15u;
+
+    uint32_t argc_va = esp;
+    uint32_t arr_va  = esp + 4;
+    uint32_t str_va  = arr_va + arr_size;
+
+    uint32_t *old = paging_get_dir();
+    paging_switch_dir(dir);
+
+    *(volatile uint32_t *)argc_va = (uint32_t)argc;
+
+    uint32_t str_off = 0;
+    for (int i = 0; i < argc; i++) {
+        const char *s = argv[i];
+        uint32_t l = 0;
+        while (s[l]) l++;
+
+        uint32_t sv = str_va + str_off;
+        for (uint32_t j = 0; j < l; j++)
+            *(volatile char *)(sv + j) = s[j];
+        *(volatile char *)(sv + l) = 0;
+
+        *(volatile uint32_t *)(arr_va + (uint32_t)i * 4) = sv;
+
+        str_off += l + 1;
+    }
+    *(volatile uint32_t *)(arr_va + (uint32_t)argc * 4) = 0;
+
+    paging_switch_dir(old);
+
+    *out_esp = esp;
+    return 0;
 }

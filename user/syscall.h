@@ -15,7 +15,7 @@
 #define MSG_SCROLL         0x304
 #define MSG_SIGINT         0x305
 #define MSG_ATA_REQ        0x400
-#define MSG_ATA_OWNER_DIED 0x401   /* ★ S6d */
+#define MSG_ATA_OWNER_DIED 0x401
 
 typedef struct {
     int      sender;
@@ -217,12 +217,14 @@ static inline void sys_yield(void) {
         : "ebx", "ecx", "edx", "esi", "edi", "memory");
 }
 
-static inline int sys_exec(const char *path) {
+/* ★ S7a: sys_exec 带 argc/argv */
+static inline int sys_exec(const char *path, int argc,
+                           const char *const *argv) {
     int r;
     __asm__ volatile("int $0x80"
         : "=a"(r)
-        : "0"(17), "b"(path)
-        : "ecx", "edx", "esi", "edi", "memory");
+        : "0"(17), "b"(path), "c"(argc), "d"(argv)
+        : "esi", "edi", "memory");
     return r;
 }
 

@@ -281,7 +281,6 @@ const uint8_t *g_vga_elf_data   = 0;
 uint32_t       g_vga_elf_size   = 0;
 const uint8_t *g_mouse_elf_data = 0;
 uint32_t       g_mouse_elf_size = 0;
-/* ★ S6b */
 const uint8_t *g_atad_elf_data  = 0;
 uint32_t       g_atad_elf_size  = 0;
 
@@ -503,7 +502,6 @@ void kmain(uint32_t magic, uint32_t mbi) {
             }
         }
 
-        /* ★ S6b */
         uint32_t as = 0, ae = 0;
         if (mb_module_find(mbi, "atad.elf", &as, &ae) == 0) {
             if (as != 0 && ae > as) {
@@ -536,7 +534,9 @@ void kmain(uint32_t magic, uint32_t mbi) {
     vga_hex(elf.stack_top);
     vga_puts("\n\n");
 
-    thread_create_elf(elf.entry, elf.stack_top, paging_get_dir());
+    /* ★ S7a: 初始 shell 入口 esp = stack_top - 4（该处 4 字节为 0） */
+    thread_create_elf(elf.entry, elf.stack_top, paging_get_dir(),
+                      elf.stack_top - 4);
 
     for (volatile int i = 0; i < 30000000; i++);
     sched_start();
