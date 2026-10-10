@@ -6,12 +6,12 @@
 
 #define USER_VGA_BASE 0x10000000u
 
-static char cmd[128];
+/* ★ 命令缓冲区：128 → 512 */
+static char cmd[512];
 static int  cmd_len = 0;
 static char cat_buf[256];
 static char cwd[MAX_PATH] = "/";
 
-/* ★ S4.6.2 / S5: 驱动全局 tid */
 static int  g_kbd_tid = -1;
 static int  g_vga_tid = -1;
 
@@ -108,7 +108,6 @@ static void resolve_path(const char *in, char *out, int out_size) {
     out[i] = 0;
 }
 
-/* ★ S4.6.2: 启动 / 重启 kbd.elf */
 static void restart_kbd(void) {
     g_kbd_tid = sys_exec_bg("/system/drive/kbd.elf");
     if (g_kbd_tid < 0) {
@@ -129,7 +128,6 @@ static void restart_kbd(void) {
     putc_('\n');
 }
 
-/* ★ S5: 启动 / 重启 vga.elf */
 static void restart_vga(void) {
     g_vga_tid = sys_exec_bg("/system/drive/vga.elf");
     if (g_vga_tid < 0) {
@@ -138,9 +136,6 @@ static void restart_vga(void) {
         putc_('\n');
         return;
     }
-
-    /* vga.elf 不需要 HELLO（内核直接把它作为 vga owner 发字符），
-       这里只打印一条 log */
 
     puts_("[shell] vga.elf started, tid=");
     print_dec(g_vga_tid);
@@ -756,7 +751,6 @@ static void cmd_kbdtid(void) {
     putc_('\n');
 }
 
-/* ★ S5 */
 static void cmd_killvga(void) {
     if (g_vga_tid < 0) {
         puts_("killvga: no vga.elf running\n");
@@ -795,7 +789,6 @@ static int read_char(void) {
             continue;
         }
 
-        /* ★ S5: vga.elf 死，重启 */
         if (m.type == MSG_VGA_OWNER_DIED) {
             putc_('\n');
             puts_("[shell] vga.elf died, restarting...\n");
@@ -854,11 +847,9 @@ static void run_cmd(void) {
 int main(void) {
     puts_("NexOS-NEXT Shell v0.5\n");
 
-    /* ★ S5: 先启动 VGA 驱动，之后所有输出走用户态 */
     puts_("Starting VGA driver (/system/drive/vga.elf)...\n");
     restart_vga();
 
-    /* ★ S4.5: 再启动键盘驱动 */
     puts_("Starting keyboard driver (/system/drive/kbd.elf)...\n");
     restart_kbd();
 
@@ -881,7 +872,8 @@ int main(void) {
                     putc_('\b');
                 }
             } else if (c >= 32 && c < 127) {
-                if (cmd_len < 127) {
+                /* ★ 上限 128 → 512 */
+                if (cmd_len < 511) {
                     cmd[cmd_len++] = (char)c;
                     putc_((char)c);
                 }

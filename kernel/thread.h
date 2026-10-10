@@ -5,14 +5,17 @@
 
 #define STACK_SIZE (32 * 1024)
 
-/* ★ S5: IPC 消息类型集中定义（内核 ↔ 用户态驱动共用） */
-#define MSG_IRQ            0x100   /* 内核 → IRQ owner */
-#define MSG_IRQ_OWNER_DIED 0x101   /* 内核 → 父进程（IRQ owner 死） */
-#define MSG_HELLO          0x200   /* shell → 驱动：我是你的输出目标 */
-#define MSG_CHAR           0x201   /* kbd → shell：字符 */
-#define MSG_EXIT           0x202   /* shell → 驱动：退出 */
-#define MSG_VGA_CHAR       0x300   /* ★ S5: 内核 → vga.elf：要显示的字符 */
-#define MSG_VGA_OWNER_DIED 0x301   /* ★ S5: 内核 → shell：vga owner 死 */
+/* ★ IPC 消息类型集中定义（内核 ↔ 用户态驱动共用） */
+#define MSG_IRQ            0x100
+#define MSG_IRQ_OWNER_DIED 0x101
+#define MSG_HELLO          0x200
+#define MSG_CHAR           0x201
+#define MSG_EXIT           0x202
+#define MSG_VGA_CHAR       0x300
+#define MSG_VGA_OWNER_DIED 0x301
+/* ★ S5.5: 鼠标查询/应答 */
+#define MSG_MOUSE_QUERY    0x302
+#define MSG_MOUSE_REPORT   0x303
 
 typedef enum { THREAD_READY, THREAD_BLOCKED, THREAD_DEAD } thread_state_t;
 
@@ -39,7 +42,6 @@ typedef struct thread {
     int            state;
     int            is_user;
     uint32_t      *page_dir;
-    /* ★ S4.5: 语义从"键盘 owner 链"改为"父进程"——exec/exit 栈式嵌套 */
     struct thread *prev_owner;
     message_t     *msg_head;
     message_t     *msg_tail;

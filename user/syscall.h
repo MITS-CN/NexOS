@@ -3,14 +3,17 @@
 
 #include <stdint.h>
 
-/* ★ ABI 约定：这些值和 kernel/thread.h 里必须一致（两边不能 include 同一头） */
+/* ★ ABI 约定：和 kernel/thread.h 一致 */
 #define MSG_IRQ            0x100
 #define MSG_IRQ_OWNER_DIED 0x101
 #define MSG_HELLO          0x200
 #define MSG_CHAR           0x201
 #define MSG_EXIT           0x202
-#define MSG_VGA_CHAR       0x300   /* ★ S5 */
-#define MSG_VGA_OWNER_DIED 0x301   /* ★ S5 */
+#define MSG_VGA_CHAR       0x300
+#define MSG_VGA_OWNER_DIED 0x301
+/* ★ S5.5: 鼠标查询/应答 */
+#define MSG_MOUSE_QUERY    0x302
+#define MSG_MOUSE_REPORT   0x303
 
 typedef struct {
     int      sender;
@@ -242,7 +245,6 @@ static inline int sys_exec_bg(const char *path) {
     return r;
 }
 
-/* ★ S5: 申请接管 VGA */
 static inline int sys_vga_claim(void) {
     int r;
     __asm__ volatile("int $0x80"
@@ -252,7 +254,6 @@ static inline int sys_vga_claim(void) {
     return r;
 }
 
-/* ★ S5: 拿内核当前 cursor（启动时对齐） */
 static inline int sys_vga_get_cursor(void) {
     int r;
     __asm__ volatile("int $0x80"

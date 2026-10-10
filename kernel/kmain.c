@@ -88,9 +88,7 @@ int vga_get_owner(void) {
 void vga_putc(char c) {
     serial_putc(c);
 
-    if (panic_mode) {
-        /* fallback */
-    } else if (vga_owner_tid >= 0) {
+    if (!panic_mode && vga_owner_tid >= 0) {
         message_t m;
         m.sender  = -1;
         m.type    = MSG_VGA_CHAR;
@@ -129,70 +127,109 @@ void vga_hex(uint32_t v) {
     for (int i = 28; i >= 0; i -= 4) vga_putc(h[(v >> i) & 0xF]);
 }
 
-/* ★ VMware DIAG: 检查 8042 是否存在 + 打印状态 */
+/* ---- 8042 helpers ---- */
+
+static void kbd_wait_input_clear(void) {
+    for (int i = 0; i < 100000; i++) {
+        if (!(inb(0x64) & 0x02)) return;
+    }
+}
+
+static void kbd_wait_output_full(void) {
+    for (int i = 0; i < 100000; i++) {
+        if (inb(0x64) & 0x01) return;
+    }
+}
+
+static void kbd_drain_output(void) {
+    for (int i = 0; i < 128; i++) {
+        if (!(inb(0x64) & 0x01)) break;
+        inb(0x60);
+    }
+}
+
+/* 给鼠标（辅助端口）发一个字节：0xD4 前缀 + 数据；吃掉 ACK */
+static void mouse_write(uint8_t data) {
+    kbd_wait_input_clear();
+    outb(0x64, 0xD4);
+    kbd_wait_input_clear();
+    outb(0x60, data);
+    kbd_wait_output_full();
+    inb(0x60);   /* ACK 0xFA */
+}
+
+/* 读鼠标 device ID（0xF2）：返回 0x00 / 0x03(IntelliMouse 4B) / 0x04(5B) */
+static uint8_t mouse_read_id(void) {
+    kbd_wait_input_clear();
+    outb(0x64, 0xD4);
+    kbd_wait_input_clear();
+    outb(0x60, 0xF2);
+    kbd_wait_output_full();
+    inb(0x60);              /* ACK 0xFA */
+    kbd_wait_output_full();
+    return inb(0x60);       /* device ID */
+}
+
+/* 初始化 8042：主键盘 + 辅助端口 + IntelliMouse 4 字节模式
+   ★ 关键：不在此处发 0xF4（Enable Data Reporting）。
+   鼠标数据上报要等 mouse.elf 注册 IRQ12 后再发，否则 8042 输出缓冲
+   会被鼠标数据填满，键盘数据进不来。 */
 static void kbd_8042_init(void) {
-    /* 探测：8042 存在时，状态端口 bit5 (0x20) = 1。
-       若返回 0xFF 或 bit5 = 0，说明没有 PS/2 控制器。 */
-    uint8_t st1 = inb(0x64);
-    uint8_t st2 = inb(0x64);
+    kbd_drain_output();
 
-    vga_puts("  [diag] 0x64 = 0x");
-    const char *h = "0123456789ABCDEF";
-    vga_putc(h[(st1 >> 4) & 0xF]);
-    vga_putc(h[ st1       & 0xF]);
-    vga_putc(' ');
-    vga_putc(h[(st2 >> 4) & 0xF]);
-    vga_putc(h[ st2       & 0xF]);
-
-    if (st1 == 0xFF && st2 == 0xFF) {
-        vga_puts(" -> NO 8042 (USB-only?)\n");
-    } else if (!(st2 & 0x20)) {
-        vga_puts(" -> 8042 present but not self-test OK\n");
-    } else {
-        vga_puts(" -> 8042 present\n");
-    }
-
-    /* 清 output */
-    for (int i = 0; i < 128; i++) {
-        if (!(inb(0x64) & 0x01)) break;
-        inb(0x60);
-    }
-
-    /* 启用端口 1 */
-    for (int i = 0; i < 100000; i++) {
-        if (!(inb(0x64) & 0x02)) break;
-    }
+    /* 1. 启用主键盘端口 + 辅助端口 */
+    kbd_wait_input_clear();
     outb(0x64, 0xAE);
-    for (volatile int i = 0; i < 10000; i++);
+    for (volatile int i = 0; i < 1000; i++);
 
-    /* 清 output */
-    for (int i = 0; i < 128; i++) {
-        if (!(inb(0x64) & 0x01)) break;
-        inb(0x60);
+    kbd_wait_input_clear();
+    outb(0x64, 0xA8);
+    for (volatile int i = 0; i < 1000; i++);
+
+    kbd_drain_output();
+
+    /* 2. 读 config，只在需要时写回（不碰 bit4/bit6） */
+    kbd_wait_input_clear();
+    outb(0x64, 0x20);
+    kbd_wait_output_full();
+    uint8_t cfg = inb(0x60);
+
+    uint8_t new_cfg = cfg;
+    int need_write = 0;
+    if (!(cfg & 0x01)) { new_cfg |= 0x01; need_write = 1; }   /* IRQ1 */
+    if (!(cfg & 0x02)) { new_cfg |= 0x02; need_write = 1; }   /* IRQ12 */
+    if (cfg & 0x20)    { new_cfg &= ~0x20; need_write = 1; }  /* 清辅助时钟禁用 */
+
+    if (need_write) {
+        kbd_wait_input_clear();
+        outb(0x64, 0x60);
+        kbd_wait_input_clear();
+        outb(0x60, new_cfg);
     }
 
-    /* 启用扫描 0xF4 */
-    for (int i = 0; i < 100000; i++) {
-        if (!(inb(0x64) & 0x02)) break;
-    }
+    kbd_drain_output();
+
+    /* 3. 主键盘启用扫描 */
+    kbd_wait_input_clear();
     outb(0x60, 0xF4);
+    kbd_wait_output_full();
+    inb(0x60);
+    kbd_drain_output();
 
-    /* 读 ACK */
-    for (int i = 0; i < 100000; i++) {
-        if (inb(0x64) & 0x01) break;
-    }
-    uint8_t ack = 0;
-    if (inb(0x64) & 0x01) ack = inb(0x60);
-    vga_puts("  [diag] 0xF4 ack = 0x");
-    vga_putc(h[(ack >> 4) & 0xF]);
-    vga_putc(h[ ack       & 0xF]);
-    vga_puts("\n");
+    /* 4. 鼠标：Set Defaults（不 enable 数据上报） */
+    mouse_write(0xF6);
+    kbd_drain_output();
 
-    /* 清残留 */
-    for (int i = 0; i < 128; i++) {
-        if (!(inb(0x64) & 0x01)) break;
-        inb(0x60);
-    }
+    /* 5. ★ IntelliMouse 魔法序列：3 次改采样率 + Get ID */
+    mouse_write(0xF3); mouse_write(200);
+    mouse_write(0xF3); mouse_write(100);
+    mouse_write(0xF3); mouse_write(80);
+    uint8_t id = mouse_read_id();
+    (void)id;   /* 0x03 = IntelliMouse (4 字节包)；其他 = 3 字节包 */
+
+    /* ★ 不发 0xF4。等 mouse.elf 起来后自己发。 */
+
+    kbd_drain_output();
 }
 
 const uint8_t *g_init_elf_data = 0;
@@ -308,7 +345,7 @@ void kmain(uint32_t magic, uint32_t mbi) {
     timer_init();       vga_puts("[OK] Timer @100Hz\n");
 
     kbd_8042_init();
-    vga_puts("[OK] PS/2 8042 init\n");
+    vga_puts("[OK] PS/2 8042 init (kbd + mouse)\n");
 
     vga_puts("[OK] Keyboard driver moved to user space (S4.5)\n");
     vga_puts("[OK] Syscalls (int 0x80)\n");
