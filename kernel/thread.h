@@ -5,7 +5,6 @@
 
 #define STACK_SIZE (32 * 1024)
 
-/* ★ IPC 消息类型集中定义（内核 ↔ 用户态驱动共用） */
 #define MSG_IRQ            0x100
 #define MSG_IRQ_OWNER_DIED 0x101
 #define MSG_HELLO          0x200
@@ -17,8 +16,8 @@
 #define MSG_MOUSE_REPORT   0x303
 #define MSG_SCROLL         0x304
 #define MSG_SIGINT         0x305
-/* ★ S6c: ATA 请求 */
 #define MSG_ATA_REQ        0x400
+#define MSG_ATA_OWNER_DIED 0x401   /* ★ S6d */
 
 typedef enum { THREAD_READY, THREAD_BLOCKED, THREAD_DEAD } thread_state_t;
 

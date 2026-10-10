@@ -15,7 +15,7 @@
 #include "irq.h"
 #include "io.h"
 #include "shm.h"
-#include "ata.h"      /* ★ S6c */
+#include "ata.h"
 #include <stdint.h>
 
 extern int  vga_get_owner(void);
@@ -57,7 +57,7 @@ extern int  vga_fetch_log(uint8_t *dst, uint32_t dst_size, void *info_ptr);
 #define SYS_VGA_GET_OWNER  29
 #define SYS_VGA_FETCH_LOG  30
 #define SYS_SHM_ALLOC      31
-#define SYS_ATA_ACTIVATE   32   /* ★ S6c */
+#define SYS_ATA_ACTIVATE   32
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -188,15 +188,21 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
                 }
             }
 
-            /* ★ S6c: 如果死者是 atad，关闭 IPC 通道 */
+            /* ★ S6c/S6d: 如果死者是 atad，关闭 IPC 通道 + 通知 shell */
             {
                 int dslot = shm_find_by_owner(current_thread->id);
                 if (dslot >= 0 && ata_ipc_get_slot() == dslot) {
                     ata_ipc_clear();
+                    if (prev) {
+                        message_t m;
+                        m.sender  = -1;
+                        m.type    = MSG_ATA_OWNER_DIED;
+                        for (int i = 0; i < 8; i++) m.data[i] = 0;
+                        ipc_send(prev->id, &m);
+                    }
                 }
             }
 
-            /* 释放共享内存 */
             shm_free_owner(current_thread->id);
 
             if (prev && prev->state == THREAD_BLOCKED) {
@@ -277,7 +283,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return vga_fetch_log((uint8_t *)a, KLOG_BYTES, (void *)b);
         }
 
-        /* ★ S6a: 分配共享内存（2 页 = 8KB）+ 映射 */
         case SYS_SHM_ALLOC: {
             if (!current_thread || !current_thread->is_user) return -1;
 
@@ -297,7 +302,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return (int)user_va;
         }
 
-        /* ★ S6c: atad 接管 ATA */
         case SYS_ATA_ACTIVATE: {
             if (!current_thread || !current_thread->is_user) return -1;
 

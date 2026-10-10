@@ -167,14 +167,12 @@ static void hist_load(void) {
     g_hist_fd = fd;
 }
 
-/* ★ 修复：清空 cmd + 显式写结束符 */
 static void redraw_input(const char *s) {
     while (cmd_len > 0) {
         putc_('\b');
         cmd_len--;
     }
 
-    /* 清空 cmd 缓冲，防残留 */
     for (int i = 0; i < 512; i++) cmd[i] = 0;
 
     int n = 0;
@@ -336,7 +334,7 @@ static void cmd_help(void) {
     puts_("  vgatid          - show current vga.elf tid\n");
     puts_("  killmouse       - S5.5 test: kill mouse.elf\n");
     puts_("  mousetid        - show current mouse.elf tid\n");
-    puts_("  killatad        - S6b test: kill atad.elf\n");
+    puts_("  killatad        - S6 test: kill atad.elf\n");
     puts_("  atadtid         - show current atad.elf tid\n");
     puts_("  keys: Up/Down = history, Ctrl+C = cancel input\n");
 }
@@ -952,6 +950,7 @@ static void cmd_atadtid(void) {
     puts_("atad.elf tid = "); print_dec(g_atad_tid); putc_('\n');
 }
 
+/* ★ S6d: MSG_ATA_OWNER_DIED → restart_atad */
 static int read_char(void) {
     user_msg_t m;
     for (;;) {
@@ -978,6 +977,13 @@ static int read_char(void) {
             putc_('\n');
             puts_("[shell] vga.elf died, restarting...\n");
             restart_vga();
+            continue;
+        }
+
+        if (m.type == MSG_ATA_OWNER_DIED) {
+            putc_('\n');
+            puts_("[shell] atad.elf died, restarting...\n");
+            restart_atad();
             continue;
         }
     }
@@ -1057,7 +1063,6 @@ int main(void) {
         puts_(cwd);
         puts_("> ");
 
-        /* ★ 修复：进入提示符前清空 cmd 缓冲 */
         for (int i = 0; i < 512; i++) cmd[i] = 0;
         cmd_len = 0;
         hist_pos = -1;
@@ -1068,7 +1073,6 @@ int main(void) {
             if (c == KEY_UP) {
                 if (hist_count == 0) continue;
                 if (hist_pos == -1) {
-                    /* ★ 修复：只复制 [0, cmd_len)，并写结束符 */
                     cur_save_len = cmd_len;
                     for (int i = 0; i < cmd_len && i < 512; i++)
                         cur_save[i] = cmd[i];
@@ -1119,7 +1123,7 @@ int main(void) {
             } else if (c >= 32 && c < 127) {
                 if (cmd_len < 511) {
                     cmd[cmd_len++] = (char)c;
-                    cmd[cmd_len]   = 0;   /* ★ 修复：维护结束符 */
+                    cmd[cmd_len]   = 0;
                     putc_((char)c);
                 }
             }

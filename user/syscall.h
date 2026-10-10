@@ -3,7 +3,6 @@
 
 #include <stdint.h>
 
-/* ★ ABI 约定：和 kernel/thread.h 一致 */
 #define MSG_IRQ            0x100
 #define MSG_IRQ_OWNER_DIED 0x101
 #define MSG_HELLO          0x200
@@ -15,8 +14,8 @@
 #define MSG_MOUSE_REPORT   0x303
 #define MSG_SCROLL         0x304
 #define MSG_SIGINT         0x305
-/* ★ S6c */
 #define MSG_ATA_REQ        0x400
+#define MSG_ATA_OWNER_DIED 0x401   /* ★ S6d */
 
 typedef struct {
     int      sender;
@@ -33,13 +32,11 @@ typedef struct {
 
 #define IRQ_NO_READ  0xFFFFu
 
-/* ★ S6a/S6c: 共享内存 */
 #define SHM_SIZE       8192
 #define SHM_USER_BASE  0x20000000u
 #define SHM_HEAD_SIZE  4096
 #define SHM_DATA_SIZE  4096
 
-/* ★ S6c: ATA 共享头（和 kernel/ata.h 一致） */
 struct ata_shm {
     uint32_t magic;
     uint32_t op;
@@ -337,7 +334,6 @@ static inline int sys_vga_fetch_log(void *dst, klog_info_t *info) {
     return r;
 }
 
-/* ★ S6a: 分配共享内存，返回用户态可读写地址；0 = 失败 */
 static inline void *sys_shm_alloc(void) {
     int r;
     __asm__ volatile("int $0x80"
@@ -347,7 +343,6 @@ static inline void *sys_shm_alloc(void) {
     return (void *)(uint32_t)r;
 }
 
-/* ★ S6c: 告诉内核"我接管 ATA 了"，内核之后所有 ATA 读写走 IPC */
 static inline int sys_ata_activate(void) {
     int r;
     __asm__ volatile("int $0x80"
