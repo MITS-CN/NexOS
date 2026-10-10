@@ -16,9 +16,13 @@
 #define O_CREAT   0x0100
 #define O_TRUNC   0x0200
 
+#define NO_DISK_BLOCK  0x80000000u
 
-/* 特殊值 */
-#define NO_DISK_BLOCK  0x80000000u   //表示这个节点没有磁盘块（ramfs 内存文件）
+struct vfs_node;
+
+/* ★ C2: 动态节点读取回调 */
+typedef int (*vfs_read_fn)(struct vfs_node *node, uint32_t offset,
+                           uint8_t *buf, uint32_t len);
 
 typedef struct vfs_node {
     char             name[MAX_NAME];
@@ -27,6 +31,8 @@ typedef struct vfs_node {
     uint8_t         *data;
     uint32_t         capacity;
     uint32_t         disk_block;
+    vfs_read_fn      read_fn;      /* ★ C2: 非空 = 动态节点 */
+    int              is_dynamic;   /* ★ C2: 禁止 write / unlink */
     struct vfs_node *parent;
     struct vfs_node *children;
     struct vfs_node *next;

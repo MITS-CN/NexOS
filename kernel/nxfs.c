@@ -1,9 +1,8 @@
 ﻿#include "nxfs.h"
 #include "ata.h"
-#include "block_cache.h"   /* ★ 加这行 */
+#include "block_cache.h"
 #include "heap.h"
 
-/* 超级块 */
 typedef struct {
     uint32_t magic;
     uint32_t version;
@@ -16,7 +15,6 @@ typedef struct {
     uint8_t  reserved[512 - 32];
 } __attribute__((packed)) nxfs_super_t;
 
-/* 目录项 32 字节 */
 typedef struct {
     char     name[24];
     uint8_t  type;
@@ -29,8 +27,6 @@ static nxfs_super_t super;
 static uint32_t    *fat_cache = 0;
 static vfs_node_t  *root = 0;
 static int          mounted = 0;
-
-/* ---- 块读写 ---- */
 
 int nxfs_read_block(uint32_t block, void *buf) {
     if (block >= super.total_blocks) return -1;
@@ -56,8 +52,6 @@ static void free_children_recursive(vfs_node_t *n) {
     }
     n->children = 0;
 }
-
-/* ---- FAT ---- */
 
 static int fat_flush(void) {
     uint32_t total_bytes = super.fat_sectors * 512;
@@ -209,8 +203,6 @@ uint32_t nxfs_write_chain(uint32_t start, uint32_t offset,
     return done;
 }
 
-/* ---- 目录项 ---- */
-
 static int name_match(const char *a, const char *b) {
     int i = 0;
     while (1) {
@@ -272,7 +264,6 @@ static int dir_insert(uint32_t dir_block, const nxfs_dirent_t *ent) {
     if (nb == NXFS_EOF) return -1;
     fat_cache[prev] = nb;
 
-    /* 用 block_buf 作为清零缓冲区，避免额外 4KB 栈 */
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) block_buf[i] = 0;
     nxfs_dirent_t *ents = (nxfs_dirent_t *)block_buf;
     ents[0] = *ent;
@@ -302,8 +293,6 @@ static int dir_remove(uint32_t dir_block, const char *name) {
     return -1;
 }
 
-/* ---- 内存树构建 ---- */
-
 static vfs_node_t *node_alloc(const char *name, int type,
                               uint32_t disk_block, uint32_t size) {
     vfs_node_t *n = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
@@ -318,6 +307,8 @@ static vfs_node_t *node_alloc(const char *name, int type,
     n->data       = 0;
     n->capacity   = 0;
     n->disk_block = disk_block;
+    n->read_fn    = 0;          /* ★ C2 */
+    n->is_dynamic = 0;          /* ★ C2 */
     n->parent     = 0;
     n->children   = 0;
     n->next       = 0;
@@ -348,8 +339,6 @@ static void build_tree(vfs_node_t *dir_node, uint32_t dir_block) {
             build_tree(child, ent.first_block);
     }
 }
-
-/* ---- 后端接口 ---- */
 
 static vfs_node_t *nxfs_create(vfs_node_t *parent, const char *name, int type) {
     if (!parent || parent->type != VFS_DIR) {
@@ -402,11 +391,10 @@ static vfs_node_t *nxfs_create(vfs_node_t *parent, const char *name, int type) {
 static int nxfs_unlink(vfs_node_t *node) {
     if (!node || !node->parent) return -1;
 
-    /* ★ 目录是否为空：查磁盘，不查内存 */
     if (node->type == VFS_DIR) {
         nxfs_dirent_t ent;
         if (dir_find_entry(node->disk_block, 0, &ent) == 0)
-            return -1;   /* 磁盘上还有有效项，拒绝 */
+            return -1;
     }
 
     dir_remove(node->parent->disk_block, node->name);
@@ -436,8 +424,6 @@ static fs_driver_t nxfs_drv = {
     .create = nxfs_create,
     .unlink = nxfs_unlink,
 };
-
-/* ---- 挂载 / 格式化 ---- */
 
 int nxfs_format(void) {
     super.magic         = NXFS_MAGIC;
@@ -494,7 +480,6 @@ int nxfs_init(void) {
     if (is_valid_nxfs) {
         vga_puts("  [nxfs] valid superblock, mounting\n");
     } else if (is_blank) {
-        /* ★ S4.5: kbd_confirm 已删除，改成自动格式化 */
         vga_puts("  [nxfs] blank disk detected, auto-formatting.\n");
         super.magic         = NXFS_MAGIC;
         super.version       = NXFS_VERSION;
@@ -506,7 +491,6 @@ int nxfs_init(void) {
         super.root_block    = 0;
         need_format = 1;
     } else {
-        /* ★ S4.5: 同样自动格式化 */
         vga_puts("  [nxfs] WARNING: non-NXFS data on disk.\n");
         vga_puts("  [nxfs] magic=");
         vga_hex(super.magic);
@@ -546,7 +530,6 @@ int nxfs_init(void) {
     return 0;
 }
 
-/* 把 node->size 和 node->disk_block 同步回磁盘的目录项 */
 int nxfs_sync_dirent(vfs_node_t *node) {
     if (!node || !node->parent) return -1;
 
@@ -573,7 +556,6 @@ int nxfs_sync_dirent(vfs_node_t *node) {
     return -1;
 }
 
-/* 刷所有脏数据到磁盘 */
 int nxfs_commit(void) {
     int r1 = bc_flush();
     int r2 = fat_flush();

@@ -15,6 +15,9 @@ static vfs_node_t *node_alloc(const char *name, int type) {
     n->size     = 0;
     n->data     = 0;
     n->capacity = 0;
+    n->disk_block = NO_DISK_BLOCK;
+    n->read_fn  = 0;          /* ★ C2 */
+    n->is_dynamic = 0;        /* ★ C2 */
     n->parent   = 0;
     n->children = 0;
     n->next     = 0;
@@ -40,6 +43,7 @@ static vfs_node_t *ramfs_create(vfs_node_t *parent, const char *name, int type) 
 static int ramfs_unlink(vfs_node_t *node) {
     if (!node || !node->parent) return -1;
     if (node->type == VFS_DIR && node->children) return -1;
+    if (node->is_dynamic) return -1;    /* ★ C2 */
 
     vfs_node_t *parent = node->parent;
 
@@ -69,12 +73,10 @@ int ramfs_init(void) {
     if (!root) return -1;
     root->parent = 0;
 
-    /* 预置 README */
     vfs_node_t *readme = ramfs_create(root, "README", VFS_FILE);
     static const char msg[] = "Welcome to NexOS-NEXT!\nThis is ramfs.\n";
     vfs_write(readme, 0, (const uint8_t *)msg, sizeof(msg) - 1);
 
-    /* 预置 /etc/version */
     vfs_node_t *etc = ramfs_create(root, "etc", VFS_DIR);
     vfs_node_t *ver = ramfs_create(etc, "version", VFS_FILE);
     static const char ver_msg[] = "0.1\n";

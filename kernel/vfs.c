@@ -2,7 +2,6 @@
 #include "ramfs.h"
 #include "heap.h"
 
-/* nxfs 的内部接口（供 vfs 调用） */
 extern uint32_t nxfs_read_chain(uint32_t start, uint32_t offset,
                                 uint8_t *buf, uint32_t len);
 extern uint32_t nxfs_write_chain(uint32_t start, uint32_t offset,
@@ -22,8 +21,6 @@ typedef struct {
 
 static file_t fd_table[MAX_FDS];
 
-/* --- 路径工具 --- */
-
 static int name_eq(const char *a, const char *b) {
     while (*a && *b) {
         if (*a != *b) return 0;
@@ -32,7 +29,6 @@ static int name_eq(const char *a, const char *b) {
     return *a == *b;
 }
 
-/* 合法文件名：字母、数字、. _ - */
 static int name_ok(const char *name) {
     if (!name || !*name) return 0;
     for (int i = 0; name[i]; i++) {
@@ -66,10 +62,7 @@ static vfs_node_t *find_child(vfs_node_t *dir, const char *name) {
     return 0;
 }
 
-/* --- 对外接口 --- */
-
 void vfs_init(void) {
-    /* 初始用 ramfs 作为 fallback，等待 nxfs 挂载 */
     ramfs_init();
     root_node = ramfs_root();
     backend   = ramfs_driver();
@@ -146,6 +139,10 @@ int vfs_unlink(const char *path) {
     if (!backend || !backend->unlink) return -1;
     vfs_node_t *n = vfs_lookup(path);
     if (!n || n == root_node) return -1;
+
+    /* ★ C2: 动态节点不可删 */
+    if (n->is_dynamic) return -1;
+
     return backend->unlink(n);
 }
 
@@ -165,16 +162,17 @@ int vfs_readdir(vfs_node_t *dir, int idx, char *out_name, int *out_type) {
     return -1;
 }
 
-
 int vfs_write(vfs_node_t *node, uint32_t offset,
               const uint8_t *data, uint32_t len) {
     if (!node || node->type != VFS_FILE) return -1;
 
+    /* ★ C2: 动态节点只读 */
+    if (node->is_dynamic) return -1;
+
     if (node->disk_block != NO_DISK_BLOCK) {
-        /* 磁盘后端 */
         if (node->disk_block == 0xFFFFFFFFu || node->disk_block == 0) {
             uint32_t b = nxfs_alloc_block();
-            if (b == 0xFFFFFFFFu) return -1; 
+            if (b == 0xFFFFFFFFu) return -1;
             node->disk_block = b;
         }
         uint32_t written = nxfs_write_chain(node->disk_block, offset, data, len);
@@ -182,7 +180,6 @@ int vfs_write(vfs_node_t *node, uint32_t offset,
         return (int)written;
     }
 
-    /* 内存后端（ramfs） */
     uint32_t end = offset + len;
     if (end < offset) return -1;
 
@@ -215,11 +212,15 @@ int vfs_write(vfs_node_t *node, uint32_t offset,
 int vfs_read(vfs_node_t *node, uint32_t offset,
              uint8_t *buf, uint32_t len) {
     if (!node || node->type != VFS_FILE) return -1;
+
+    /* ★ C2: 动态节点优先（在 size 检查之前） */
+    if (node->read_fn) return node->read_fn(node, offset, buf, len);
+
     if (offset >= node->size) return 0;
     if (offset + len > node->size) len = node->size - offset;
 
     if (node->disk_block != NO_DISK_BLOCK) {
-        if (node->disk_block == 0xFFFFFFFFu) return 0;   /* 没数据 */
+        if (node->disk_block == 0xFFFFFFFFu) return 0;
         return (int)nxfs_read_chain(node->disk_block, offset, buf, len);
     }
 
@@ -227,8 +228,6 @@ int vfs_read(vfs_node_t *node, uint32_t offset,
         buf[i] = node->data[offset + i];
     return (int)len;
 }
-
-/* --- 文件描述符 --- */
 
 int vfs_open(const char *path, int flags) {
     vfs_node_t *n = vfs_lookup(path);
@@ -238,6 +237,7 @@ int vfs_open(const char *path, int flags) {
         if (!n) return -1;
     } else if (flags & O_TRUNC) {
         if (n->type != VFS_FILE) return -1;
+        if (n->is_dynamic) return -1;   /* ★ C2: 动态节点不可 trunc */
         n->size = 0;
         if (n->disk_block != NO_DISK_BLOCK && n->disk_block != 0xFFFFFFFFu) {
             nxfs_free_chain(n->disk_block);
@@ -273,7 +273,6 @@ int vfs_fd_write(int fd, const uint8_t *buf, uint32_t len) {
     if (fd < 0 || fd >= MAX_FDS || !fd_table[fd].used) return -1;
     int n = vfs_write(fd_table[fd].node, fd_table[fd].offset, buf, len);
     if (n > 0) fd_table[fd].offset += n;
-
 
     extern int nxfs_sync_dirent(vfs_node_t *);
     extern int nxfs_commit(void);

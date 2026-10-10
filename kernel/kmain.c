@@ -17,6 +17,7 @@
 #include "nxfs.h"
 #include "install.h"
 #include "ipc.h"
+#include "proc.h"
 
 #define VGA_MEMORY ((volatile uint16_t *)0xB8000)
 #define VGA_WIDTH  80
@@ -436,7 +437,14 @@ void kmain(uint32_t magic, uint32_t mbi) {
     }
     vga_puts("[OK] NXFS mounted\n");
     vfs_use_nxfs();
-    vga_puts("[OK] VFS now on NXFS\n\n");
+    vga_puts("[OK] VFS now on NXFS\n");
+
+    /* ★ C2: 挂载 /proc */
+    if (proc_init() == 0) {
+        vga_puts("[OK] procfs mounted at /proc\n\n");
+    } else {
+        vga_puts("[WARN] procfs mount failed\n\n");
+    }
 
     uint8_t *elf_buf  = 0;
     uint32_t elf_size = 0;

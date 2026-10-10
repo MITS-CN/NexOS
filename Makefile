@@ -21,7 +21,7 @@ OBJS = build/serial.o \
        build/thread.o build/sched.o build/switch.o \
        build/timer.o build/ipc.o build/irq.o \
        build/syscall.o build/usermode.o \
-       build/elf_loader.o
+       build/elf_loader.o build/proc.o
 
 all: build/NexOS-NEXT.iso $(IMAGE_DIR)/disk.img
 
@@ -57,9 +57,6 @@ build/%.o: kernel/%.S | build
 build/entry.o: kernel/entry.S | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# ============================================================
-# 用户程序
-# ============================================================
 build/user_start.o: user/start.S | build
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -81,16 +78,12 @@ build/vga_main.o: user/vga.c | build
 build/vga.elf: build/user_start.o build/vga_main.o user/user.ld
 	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/vga_main.o
 
-# ★ S5.5
 build/mouse_main.o: user/mouse.c | build
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 build/mouse.elf: build/user_start.o build/mouse_main.o user/user.ld
 	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/mouse_main.o
 
-# ============================================================
-# 内核 ELF
-# ============================================================
 build/NexOS-NEXT.elf: $(OBJS) linker.ld
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lgcc
 
