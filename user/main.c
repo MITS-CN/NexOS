@@ -6,6 +6,13 @@
 
 #define USER_VGA_BASE 0x10000000u
 
+/* ★ C3: 特殊键 & 历史配置 */
+#define KEY_UP    0x80
+#define KEY_DOWN  0x81
+#define HIST_MAX  32
+
+#define HIST_PATH "/user/ROOT/commands.history"
+
 static char cmd[512];
 static int  cmd_len = 0;
 static char cat_buf[256];
@@ -15,8 +22,24 @@ static int  g_kbd_tid   = -1;
 static int  g_vga_tid   = -1;
 static int  g_mouse_tid = -1;
 
+/* ★ C3: 历史缓冲 */
+static char hist[HIST_MAX][512];
+static int  hist_count  = 0;
+static int  hist_pos    = -1;
+static char cur_save[512];
+static int  cur_save_len = 0;
+
+/* ★ C3 延迟修复: 常驻 append fd */
+static int  g_hist_fd = -1;
+
 static void putc_(char c) { sys_putchar(c); }
 static void puts_(const char *s) { while (*s) putc_(*s++); }
+
+static int str_len(const char *s) {
+    int n = 0;
+    while (s[n]) n++;
+    return n;
+}
 
 static int str_eq(const char *a, const char *b) {
     while (*a && *b) { if (*a != *b) return 0; a++; b++; }
@@ -56,6 +79,112 @@ static void print_dec(int v) {
     if (v == 0) b[i++] = '0';
     while (v) { b[i++] = '0' + (v % 10); v /= 10; }
     while (i--) putc_(b[i]);
+}
+
+static void ensure_hist_dirs(void) {
+    int fd;
+
+    fd = sys_open("/user", 0);
+    if (fd < 0) sys_mkdir("/user");
+    else        sys_close(fd);
+
+    fd = sys_open("/user/ROOT", 0);
+    if (fd < 0) sys_mkdir("/user/ROOT");
+    else        sys_close(fd);
+}
+
+/* ★ C3: 加一条历史（去重相邻、满则左移）
+   返回 1 = 真的加了；0 = 跳过 */
+static int hist_add(const char *s) {
+    int len = str_len(s);
+    if (len == 0) return 0;
+
+    if (hist_count > 0) {
+        const char *last = hist[hist_count - 1];
+        int same = 1;
+        for (int i = 0; i <= len; i++) {
+            if (last[i] != s[i]) { same = 0; break; }
+        }
+        if (same) return 0;
+    }
+
+    if (hist_count >= HIST_MAX) {
+        for (int i = 0; i < HIST_MAX - 1; i++)
+            for (int j = 0; j < 512; j++)
+                hist[i][j] = hist[i + 1][j];
+        hist_count--;
+    }
+
+    for (int i = 0; i <= len && i < 512; i++)
+        hist[hist_count][i] = s[i];
+    hist_count++;
+    return 1;
+}
+
+/* ★ C3 延迟修复: 追加一行到历史文件（一次 write） */
+static void hist_append(const char *s) {
+    if (g_hist_fd < 0) return;
+    int len = str_len(s);
+    if (len == 0 || len > 510) return;
+
+    char buf[512];
+    for (int i = 0; i < len; i++) buf[i] = s[i];
+    buf[len]     = '\n';
+    buf[len + 1] = 0;
+
+    sys_write(g_hist_fd, buf, len + 1);
+}
+
+/* ★ C3: 启动时读历史文件，保留 fd（read 完之后 offset 已在末尾） */
+static void hist_load(void) {
+    int fd = sys_open(HIST_PATH, 0);
+    if (fd < 0) {
+        /* 首次启动：创建空文件 */
+        fd = sys_open(HIST_PATH, 0x0100);   /* O_CREAT */
+    }
+    if (fd < 0) return;
+
+    char buf[128];
+    char line[512];
+    int  line_len = 0;
+    int  n;
+
+    for (;;) {
+        n = sys_read(fd, buf, sizeof(buf));
+        if (n <= 0) break;
+
+        for (int i = 0; i < n; i++) {
+            char ch = buf[i];
+            if (ch == '\n') {
+                if (line_len > 0 && hist_count < HIST_MAX) {
+                    for (int j = 0; j <= line_len && j < 512; j++)
+                        hist[hist_count][j] = line[j];
+                    hist_count++;
+                }
+                line_len = 0;
+            } else if (line_len < 511) {
+                line[line_len++] = ch;
+                line[line_len]   = 0;
+            }
+        }
+    }
+
+    /* ★ 保留 fd：offset 已在末尾，后续 write 就是 append */
+    g_hist_fd = fd;
+}
+
+static void redraw_input(const char *s) {
+    while (cmd_len > 0) {
+        putc_('\b');
+        cmd_len--;
+    }
+    int n = 0;
+    while (s[n] && n < 511) {
+        cmd[n] = s[n];
+        putc_(s[n]);
+        n++;
+    }
+    cmd_len = n;
 }
 
 static void resolve_path(const char *in, char *out, int out_size) {
@@ -180,13 +309,14 @@ static void cmd_help(void) {
     puts_("  mkpart N T S C  - create partition N: type T, start LBA S, sectors C\n");
     puts_("  ioperm          - S1 test: request VGA I/O port 0x3D4/0x3D5\n");
     puts_("  vgatest         - S2 test: read/write VGA MMIO from user mode\n");
-    puts_("  irqtest         - S3 test: claim IRQ1 (will fail if kbd.elf holds it)\n");
-    puts_("  killkbd         - S4.6.2 test: kill kbd.elf, watch it restart\n");
+    puts_("  irqtest         - S3 test: claim IRQ1\n");
+    puts_("  killkbd         - S4.6.2 test: kill kbd.elf\n");
     puts_("  kbdtid          - show current kbd.elf tid\n");
-    puts_("  killvga         - S5 test: kill vga.elf, watch it restart\n");
+    puts_("  killvga         - S5 test: kill vga.elf\n");
     puts_("  vgatid          - show current vga.elf tid\n");
-    puts_("  killmouse       - S5.5 test: kill mouse.elf, watch it restart\n");
+    puts_("  killmouse       - S5.5 test: kill mouse.elf\n");
     puts_("  mousetid        - show current mouse.elf tid\n");
+    puts_("  keys: Up/Down = history, Ctrl+C = cancel input\n");
 }
 
 static void cmd_pwd(void) {
@@ -813,7 +943,6 @@ static void cmd_mousetid(void) {
     putc_('\n');
 }
 
-/* ★ S5.6 C1: MSG_SIGINT → 返回 -2 */
 static int read_char(void) {
     user_msg_t m;
     for (;;) {
@@ -897,6 +1026,10 @@ static void run_cmd(void) {
 int main(void) {
     puts_("NexOS-NEXT Shell v0.5\n");
 
+    /* ★ C3: 历史目录 + 加载（hist_load 会保留一个 append fd） */
+    ensure_hist_dirs();
+    hist_load();
+
     puts_("Starting VGA driver (/system/drive/vga.elf)...\n");
     restart_vga();
 
@@ -912,19 +1045,54 @@ int main(void) {
         puts_(cwd);
         puts_("> ");
         cmd_len = 0;
+        hist_pos = -1;
 
         for (;;) {
             int c = read_char();
 
-            /* ★ S5.6 C1: Ctrl+C 清空当前输入 */
+            /* ★ C3: 方向键 */
+            if (c == KEY_UP) {
+                if (hist_count == 0) continue;
+                if (hist_pos == -1) {
+                    cur_save_len = cmd_len;
+                    for (int i = 0; i <= cmd_len && i < 512; i++)
+                        cur_save[i] = cmd[i];
+                    hist_pos = hist_count - 1;
+                } else if (hist_pos > 0) {
+                    hist_pos--;
+                } else {
+                    continue;
+                }
+                redraw_input(hist[hist_pos]);
+                continue;
+            }
+
+            if (c == KEY_DOWN) {
+                if (hist_pos == -1) continue;
+                if (hist_pos < hist_count - 1) {
+                    hist_pos++;
+                    redraw_input(hist[hist_pos]);
+                } else {
+                    hist_pos = -1;
+                    redraw_input(cur_save);
+                }
+                continue;
+            }
+
             if (c == -2) {
                 putc_('\n');
                 puts_("^C\n");
                 cmd_len = 0;
+                hist_pos = -1;
                 break;
             }
 
             if (c == '\n') {
+                /* ★ C3 延迟修复: append 一行，一次 write */
+                if (hist_add(cmd)) {
+                    hist_append(cmd);
+                }
+                hist_pos = -1;
                 run_cmd();
                 break;
             } else if (c == '\b') {

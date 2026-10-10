@@ -6,6 +6,10 @@
 #define IRQ_KBD       1
 #define KBD_DATA_PORT 0x60
 
+/* 特殊键值（和 shell 约定） */
+#define KEY_UP    0x80
+#define KEY_DOWN  0x81
+
 static const char scancode_map[128] = {
     0,    27,   '1',  '2',  '3',  '4',  '5',  '6',
     '7',  '8',  '9',  '0',  '-',  '=',  '\b', '\t',
@@ -76,7 +80,20 @@ static void kbd_loop(void) {
         if (sc & 0x80) continue;
         if (sc >= 128) continue;
 
-        /* ★ S5.6 C1: Ctrl+C → MSG_SIGINT（sc 0x2E = 'c'） */
+        /* ★ C3: 方向键 —— 0x48 上 / 0x50 下 */
+        if (sc == 0x48 || sc == 0x50) {
+            if (out_tid >= 0) {
+                user_msg_t out;
+                out.sender  = 0;
+                out.type    = MSG_CHAR;
+                out.data[0] = (sc == 0x48) ? KEY_UP : KEY_DOWN;
+                for (int i = 1; i < 8; i++) out.data[i] = 0;
+                sys_send(out_tid, &out);
+            }
+            continue;
+        }
+
+        /* S5.6 C1: Ctrl+C → MSG_SIGINT（sc 0x2E = 'c'） */
         if (ctrl_pressed && sc == 0x2E) {
             if (out_tid >= 0) {
                 user_msg_t sig;

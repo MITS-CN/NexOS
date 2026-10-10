@@ -28,6 +28,24 @@ static uint32_t    *fat_cache = 0;
 static vfs_node_t  *root = 0;
 static int          mounted = 0;
 
+/* ★ C3+ : FAT 脏扇区位图（每字节 = 1 个 512B FAT 扇区）
+   FAT 共 64 扇区，每扇区 128 项（4 字节/项） */
+#define FAT_SECTORS_MAX 64
+static uint8_t fat_dirty[FAT_SECTORS_MAX];
+
+/* 块号 i 所在的 FAT 扇区索引 */
+static inline int fat_sector_of(uint32_t block) {
+    return (int)(block / 128);
+}
+
+/* ★ 统一的 FAT 项写接口：改 fat_cache + 标脏 */
+static inline void fat_set(uint32_t block, uint32_t val) {
+    if (block >= super.total_blocks) return;
+    fat_cache[block] = val;
+    int s = fat_sector_of(block);
+    if (s >= 0 && s < FAT_SECTORS_MAX) fat_dirty[s] = 1;
+}
+
 int nxfs_read_block(uint32_t block, void *buf) {
     if (block >= super.total_blocks) return -1;
     uint32_t lba = NXFS_PART_LBA + super.data_lba
@@ -53,20 +71,18 @@ static void free_children_recursive(vfs_node_t *n) {
     n->children = 0;
 }
 
+/* ★ 只刷脏扇区 */
 static int fat_flush(void) {
-    uint32_t total_bytes = super.fat_sectors * 512;
-    uint32_t done = 0;
-    uint8_t *p = (uint8_t *)fat_cache;
-
-    while (done < total_bytes) {
-        uint32_t left_sectors = (total_bytes - done) / 512;
-        if (left_sectors == 0) left_sectors = 1;
-        if (left_sectors > 128) left_sectors = 128;
-        if (ata_write_sectors(NXFS_PART_LBA + super.fat_lba + done / 512,
-                              (uint8_t)left_sectors, p + done) < 0)
+    int any = 0;
+    for (int i = 0; i < (int)super.fat_sectors; i++) {
+        if (!fat_dirty[i]) continue;
+        if (ata_write_sectors(NXFS_PART_LBA + super.fat_lba + i, 1,
+                              (uint8_t *)fat_cache + i * 512) < 0)
             return -1;
-        done += left_sectors * 512;
+        fat_dirty[i] = 0;
+        any = 1;
     }
+    (void)any;
     return 0;
 }
 
@@ -81,13 +97,15 @@ static int fat_load(void) {
             return -1;
         done += cnt;
     }
+    /* ★ 刚读完，无脏 */
+    for (int i = 0; i < FAT_SECTORS_MAX; i++) fat_dirty[i] = 0;
     return 0;
 }
 
 uint32_t nxfs_alloc_block(void) {
     for (uint32_t i = 0; i < super.total_blocks; i++) {
         if (fat_cache[i] == NXFS_FREE) {
-            fat_cache[i] = NXFS_EOF;
+            fat_set(i, NXFS_EOF);
             return i;
         }
     }
@@ -98,7 +116,7 @@ void nxfs_free_chain(uint32_t start) {
     uint32_t guard = 0;
     while (start != NXFS_EOF && start < super.total_blocks) {
         uint32_t next = fat_cache[start];
-        fat_cache[start] = NXFS_FREE;
+        fat_set(start, NXFS_FREE);
         if (next == NXFS_EOF) break;
         start = next;
         if (++guard > super.total_blocks) break;
@@ -165,7 +183,7 @@ uint32_t nxfs_write_chain(uint32_t start, uint32_t offset,
         if (cur == NXFS_EOF) {
             uint32_t nb = nxfs_alloc_block();
             if (nb == NXFS_EOF) return 0;
-            fat_cache[prev] = nb;
+            fat_set(prev, nb);
             cur = nb;
         }
         skip--;
@@ -193,7 +211,7 @@ uint32_t nxfs_write_chain(uint32_t start, uint32_t offset,
             if (next == NXFS_EOF) {
                 uint32_t nb = nxfs_alloc_block();
                 if (nb == NXFS_EOF) break;
-                fat_cache[cur] = nb;
+                fat_set(cur, nb);
                 next = nb;
             }
             cur = next;
@@ -237,7 +255,6 @@ static int dir_find_entry(uint32_t dir_block, int idx,
 }
 
 static int dir_insert(uint32_t dir_block, const nxfs_dirent_t *ent) {
-
     static uint8_t block_buf[NXFS_BLOCK_SIZE];
     uint32_t cur = dir_block;
     uint32_t prev = NXFS_EOF;
@@ -262,7 +279,7 @@ static int dir_insert(uint32_t dir_block, const nxfs_dirent_t *ent) {
 
     uint32_t nb = nxfs_alloc_block();
     if (nb == NXFS_EOF) return -1;
-    fat_cache[prev] = nb;
+    fat_set(prev, nb);
 
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) block_buf[i] = 0;
     nxfs_dirent_t *ents = (nxfs_dirent_t *)block_buf;
@@ -307,8 +324,8 @@ static vfs_node_t *node_alloc(const char *name, int type,
     n->data       = 0;
     n->capacity   = 0;
     n->disk_block = disk_block;
-    n->read_fn    = 0;          /* ★ C2 */
-    n->is_dynamic = 0;          /* ★ C2 */
+    n->read_fn    = 0;
+    n->is_dynamic = 0;
     n->parent     = 0;
     n->children   = 0;
     n->next       = 0;
@@ -352,7 +369,7 @@ static vfs_node_t *nxfs_create(vfs_node_t *parent, const char *name, int type) {
         if (first_block == NXFS_EOF) {
             return 0;
         }
-                static uint8_t zero[NXFS_BLOCK_SIZE];
+        static uint8_t zero[NXFS_BLOCK_SIZE];
         for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) zero[i] = 0;
         if (nxfs_write_block(first_block, zero) < 0) {
             return 0;
@@ -385,7 +402,6 @@ static vfs_node_t *nxfs_create(vfs_node_t *parent, const char *name, int type) {
 
     fat_flush();
     return n;
-
 }
 
 static int nxfs_unlink(vfs_node_t *node) {
@@ -449,7 +465,14 @@ int nxfs_format(void) {
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) zero[i] = 0;
     if (nxfs_write_block(0, zero) < 0) return -2;
 
-    if (fat_flush() < 0) return -3;
+    /* 格式化时直接整 FAT 写一次（一次性，不走 dirty 逻辑） */
+    for (uint32_t i = 0; i < super.fat_sectors; i++) {
+        if (ata_write_sectors(NXFS_PART_LBA + super.fat_lba + i, 1,
+                              (uint8_t *)fat_cache + i * 512) < 0)
+            return -3;
+    }
+    for (int i = 0; i < FAT_SECTORS_MAX; i++) fat_dirty[i] = 0;
+
     return 0;
 }
 
@@ -510,6 +533,8 @@ int nxfs_init(void) {
 
     fat_cache = (uint32_t *)kmalloc(super.total_blocks * 4);
     if (!fat_cache) { vga_puts("  [nxfs] kmalloc failed\n"); return -2; }
+
+    for (int i = 0; i < FAT_SECTORS_MAX; i++) fat_dirty[i] = 0;
 
     bc_init(NXFS_PART_LBA + super.data_lba);
     if (!bc_ready()) { vga_puts("  [nxfs] bc not ready\n"); return -6; }
