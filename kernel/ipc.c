@@ -23,8 +23,11 @@ int ipc_send(int tid, message_t *msg) {
     t->msg_tail = m;
 
     /* 唤醒阻塞的接收方 */
-    if (t->state == THREAD_BLOCKED)
+    if (t->state == THREAD_BLOCKED) {
         t->state = THREAD_READY;
+        /* ★ S6.5-2: 通知 IRQ handler 立即抢占 */
+        sched_set_need_resched();
+    }
 
     return 0;
 }
@@ -42,9 +45,7 @@ void ipc_recv(message_t *out) {
             return;
         }
 
-        /* 队列空：标记阻塞，开中断并休眠，等中断唤醒
-           ★ S4 修正：原来是 sched_yield()，单线程场景下会死循环，
-              且 syscall 上下文 cli 关中断，IRQ 进不来 */
+        /* 队列空：标记阻塞，开中断并休眠，等中断唤醒 */
         current_thread->state = THREAD_BLOCKED;
         __asm__ volatile("sti; hlt");
     }

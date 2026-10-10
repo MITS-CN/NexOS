@@ -11,6 +11,17 @@ static thread_t *threads[MAX_THREADS];
 static int       thread_count = 0;
 static int       current_idx  = 0;
 
+/* ★ S6.5-2 */
+static volatile int need_resched = 0;
+
+void sched_set_need_resched(void) { need_resched = 1; }
+
+int sched_take_need_resched(void) {
+    int r = need_resched;
+    need_resched = 0;
+    return r;
+}
+
 thread_t *sched_find(int tid) {
     for (int i = 0; i < thread_count; i++)
         if (threads[i]->id == tid) return threads[i];
@@ -133,7 +144,6 @@ void sched_start(void) {
     for (;;) __asm__ volatile("hlt");
 }
 
-/* ★ C2.5: 遍历接口 */
 int sched_thread_count(void) {
     return thread_count;
 }

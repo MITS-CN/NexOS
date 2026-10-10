@@ -2,6 +2,7 @@
 #include "io.h"
 #include "timer.h"
 #include "irq.h"
+#include "sched.h"    /* ★ S6.5-2 */
 
 extern void vga_set_panic(int on);
 
@@ -67,25 +68,20 @@ void irq_handler(struct regs *r) {
     int irq_no = (int)(r->int_no - 32);
     if (irq_no < 0 || irq_no >= IRQ_MAX) return;
 
+    /* IRQ0 时钟：timer_tick 里自己会 sched_tick，不用额外抢占检查 */
     if (irq_no == 0) {
         timer_tick();
         return;
     }
 
-    /* ★ DIAG: IRQ1 一到就写物理 VGA 右下角（绕过 IPC / vga.elf）
-       位置 = 最后一行右下两格：'I' + 十六进制计数 */
-    if (irq_no == 1) {
-        static uint32_t irq1_cnt = 0;
-        irq1_cnt++;
-        volatile uint16_t *vga = (volatile uint16_t *)0xB8000;
-        const char *h = "0123456789ABCDEF";
-        vga[24 * 80 + 78] = (uint16_t)((0x0E << 8) | 'I');   /* 黄色 I */
-        vga[24 * 80 + 79] = (uint16_t)((0x0E << 8) | h[irq1_cnt & 0xF]);
-    }
-
     int owner = irq_owner(irq_no);
     if (owner >= 0) {
         irq_dispatch(irq_no);
-        return;
+    }
+
+    /* ★ S6.5-2: 如果本中断唤醒了一个 BLOCKED 线程（ipc_send 会设标志），
+       立即让出 CPU —— 被唤醒的线程不用再等时钟 tick */
+    if (sched_take_need_resched()) {
+        sched_yield();
     }
 }
