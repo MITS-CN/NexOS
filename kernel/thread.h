@@ -40,11 +40,14 @@ typedef struct thread {
     uint32_t      *kernel_stack;
     uint32_t      *user_stack;
     void         (*entry)(void);
-    uint32_t       entry_esp;    /* ★ S7a: 用户态入口 esp（含 argv） */
+    uint32_t       entry_esp;
     int            id;
     int            state;
     int            is_user;
     uint32_t      *page_dir;
+    /* ★ S7c: 权限身份（0=root） */
+    uint16_t       uid;
+    uint16_t       gid;
     struct thread *prev_owner;
     message_t     *msg_head;
     message_t     *msg_tail;

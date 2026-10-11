@@ -1,5 +1,6 @@
 ﻿#include "ramfs.h"
 #include "heap.h"
+#include "thread.h"   /* ★ S7c */
 
 static vfs_node_t *root = 0;
 
@@ -16,8 +17,15 @@ static vfs_node_t *node_alloc(const char *name, int type) {
     n->data     = 0;
     n->capacity = 0;
     n->disk_block = NO_DISK_BLOCK;
-    n->read_fn  = 0;          /* ★ C2 */
-    n->is_dynamic = 0;        /* ★ C2 */
+    n->read_fn  = 0;
+    n->is_dynamic = 0;
+
+    /* ★ S7c */
+    uint16_t uid = current_thread ? current_thread->uid : 0;
+    n->mode = (type == VFS_DIR) ? VFS_DEF_DIR_MODE : VFS_DEF_FILE_MODE;
+    n->uid  = uid;
+    n->gid  = 0;
+
     n->parent   = 0;
     n->children = 0;
     n->next     = 0;
@@ -43,7 +51,7 @@ static vfs_node_t *ramfs_create(vfs_node_t *parent, const char *name, int type) 
 static int ramfs_unlink(vfs_node_t *node) {
     if (!node || !node->parent) return -1;
     if (node->type == VFS_DIR && node->children) return -1;
-    if (node->is_dynamic) return -1;    /* ★ C2 */
+    if (node->is_dynamic) return -1;
 
     vfs_node_t *parent = node->parent;
 

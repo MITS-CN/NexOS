@@ -5,7 +5,7 @@
 #include "heap.h"
 #include "pmm.h"
 #include "thread.h"
-#include "sched.h"      /* ★ C2.5 */
+#include "sched.h"
 #include "timer.h"
 
 static int u32_to_str(uint32_t v, char *out) {
@@ -77,7 +77,6 @@ static int proc_uptime_read(vfs_node_t *n, uint32_t offset,
     return copy_str(tmp, (uint32_t)p, offset, buf, len);
 }
 
-/* ★ C2.5: 列出所有线程 */
 static const char *state_name(int s) {
     switch (s) {
         case THREAD_READY:   return "READY";
@@ -130,6 +129,12 @@ static vfs_node_t *make_proc_file(const char *name, vfs_read_fn fn) {
     n->disk_block = NO_DISK_BLOCK;
     n->read_fn    = fn;
     n->is_dynamic = 1;
+
+    /* ★ S7c: /proc 文件只读，uid=0（root 所有） */
+    n->mode = 0444;
+    n->uid  = 0;
+    n->gid  = 0;
+
     n->parent     = 0;
     n->children   = 0;
     n->next       = 0;
@@ -161,6 +166,9 @@ int proc_init(void) {
     dir->disk_block = NO_DISK_BLOCK;
     dir->read_fn   = 0;
     dir->is_dynamic = 1;
+    dir->mode      = 0555;   /* ★ S7c: r-xr-xr-x */
+    dir->uid       = 0;
+    dir->gid       = 0;
     dir->parent    = root;
     dir->children  = 0;
     dir->next      = 0;

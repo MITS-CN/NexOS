@@ -1,6 +1,7 @@
 ﻿#include "vfs.h"
 #include "ramfs.h"
 #include "heap.h"
+#include "thread.h"   /* ★ S7c: current_thread->uid */
 
 extern uint32_t nxfs_read_chain(uint32_t start, uint32_t offset,
                                 uint8_t *buf, uint32_t len);
@@ -8,6 +9,8 @@ extern uint32_t nxfs_write_chain(uint32_t start, uint32_t offset,
                                  const uint8_t *buf, uint32_t len);
 extern uint32_t nxfs_alloc_block(void);
 extern void     nxfs_free_chain(uint32_t start);
+extern int      nxfs_sync_dirent(vfs_node_t *node);
+extern int      nxfs_commit(void);
 
 static fs_driver_t *backend = 0;
 static vfs_node_t  *root_node = 0;
@@ -59,6 +62,53 @@ static vfs_node_t *find_child(vfs_node_t *dir, const char *name) {
     if (!dir || dir->type != VFS_DIR) return 0;
     for (vfs_node_t *c = dir->children; c; c = c->next)
         if (name_eq(c->name, name)) return c;
+    return 0;
+}
+
+/* ★ S7c: 权限检查
+   uid 0 (root) 全通过
+   否则按 uid == node->uid 选 owner 位，不同则按 other 位
+   group 检查暂时跳过（gid 全 0） */
+int vfs_has_perm(vfs_node_t *n, int need) {
+    if (!n) return 0;
+    uint16_t uid = current_thread ? current_thread->uid : 0;
+    if (uid == 0) return 1;
+
+    uint16_t m = n->mode & VFS_MODE_MASK;
+    if (m == 0) m = (n->type == VFS_DIR) ? VFS_DEF_DIR_MODE : VFS_DEF_FILE_MODE;
+
+    uint16_t perm;
+    if (uid == n->uid)
+        perm = (m >> 6) & 7;    /* owner 位 */
+    else
+        perm = m & 7;           /* other 位（暂时没 group 概念） */
+
+    return (perm & need) == need;
+}
+
+int vfs_chmod(vfs_node_t *n, uint16_t mode) {
+    if (!n) return -1;
+    uint16_t uid = current_thread ? current_thread->uid : 0;
+    if (uid != 0 && uid != n->uid) return -1;
+
+    n->mode = mode & VFS_MODE_MASK;
+    if (n->disk_block != NO_DISK_BLOCK) {
+        nxfs_sync_dirent(n);
+        nxfs_commit();
+    }
+    return 0;
+}
+
+int vfs_chown(vfs_node_t *n, uint16_t uid) {
+    if (!n) return -1;
+    uint16_t cur = current_thread ? current_thread->uid : 0;
+    if (cur != 0) return -1;
+
+    n->uid = uid;
+    if (n->disk_block != NO_DISK_BLOCK) {
+        nxfs_sync_dirent(n);
+        nxfs_commit();
+    }
     return 0;
 }
 
@@ -132,17 +182,28 @@ vfs_node_t *vfs_create(const char *path, int type) {
     if (!parent || parent->type != VFS_DIR) return 0;
     if (find_child(parent, base)) return 0;
 
-    return backend->create(parent, base, type);
+    /* ★ S7c: 创建后设默认 mode/uid */
+    vfs_node_t *n = backend->create(parent, base, type);
+    if (!n) return 0;
+
+    uint16_t uid = current_thread ? current_thread->uid : 0;
+    n->mode = (type == VFS_DIR) ? VFS_DEF_DIR_MODE : VFS_DEF_FILE_MODE;
+    n->uid  = uid;
+    n->gid  = 0;
+
+    /* 落盘 */
+    if (n->disk_block != NO_DISK_BLOCK) {
+        nxfs_sync_dirent(n);
+        nxfs_commit();
+    }
+    return n;
 }
 
 int vfs_unlink(const char *path) {
     if (!backend || !backend->unlink) return -1;
     vfs_node_t *n = vfs_lookup(path);
     if (!n || n == root_node) return -1;
-
-    /* ★ C2: 动态节点不可删 */
     if (n->is_dynamic) return -1;
-
     return backend->unlink(n);
 }
 
@@ -165,8 +226,6 @@ int vfs_readdir(vfs_node_t *dir, int idx, char *out_name, int *out_type) {
 int vfs_write(vfs_node_t *node, uint32_t offset,
               const uint8_t *data, uint32_t len) {
     if (!node || node->type != VFS_FILE) return -1;
-
-    /* ★ C2: 动态节点只读 */
     if (node->is_dynamic) return -1;
 
     if (node->disk_block != NO_DISK_BLOCK) {
@@ -213,7 +272,6 @@ int vfs_read(vfs_node_t *node, uint32_t offset,
              uint8_t *buf, uint32_t len) {
     if (!node || node->type != VFS_FILE) return -1;
 
-    /* ★ C2: 动态节点优先（在 size 检查之前） */
     if (node->read_fn) return node->read_fn(node, offset, buf, len);
 
     if (offset >= node->size) return 0;
@@ -229,24 +287,39 @@ int vfs_read(vfs_node_t *node, uint32_t offset,
     return (int)len;
 }
 
+/* ★ S7c: 加权限检查 */
 int vfs_open(const char *path, int flags) {
     vfs_node_t *n = vfs_lookup(path);
+
+    int creating = !n && (flags & O_CREAT);
+
     if (!n) {
         if (!(flags & O_CREAT)) return -1;
         n = vfs_create(path, VFS_FILE);
         if (!n) return -1;
-    } else if (flags & O_TRUNC) {
-        if (n->type != VFS_FILE) return -1;
-        if (n->is_dynamic) return -1;   /* ★ C2: 动态节点不可 trunc */
-        n->size = 0;
-        if (n->disk_block != NO_DISK_BLOCK && n->disk_block != 0xFFFFFFFFu) {
-            nxfs_free_chain(n->disk_block);
-            n->disk_block = 0xFFFFFFFFu;
+    } else {
+        /* 权限检查：读需要 R，写需要 W */
+        int need = 0;
+        if ((flags & O_RDWR) == O_RDWR)          need = VFS_R_USR | VFS_W_USR;
+        else if (flags & O_WRONLY)               need = VFS_W_USR;
+        else if (flags & O_TRUNC)                need = VFS_W_USR;
+        else                                     need = VFS_R_USR;
+
+        if (!creating && need && !vfs_has_perm(n, need))
+            return -1;
+
+        if (flags & O_TRUNC) {
+            if (n->type != VFS_FILE) return -1;
+            if (n->is_dynamic) return -1;
+            if (!vfs_has_perm(n, VFS_W_USR)) return -1;
+            n->size = 0;
+            if (n->disk_block != NO_DISK_BLOCK && n->disk_block != 0xFFFFFFFFu) {
+                nxfs_free_chain(n->disk_block);
+                n->disk_block = 0xFFFFFFFFu;
+            }
+            nxfs_sync_dirent(n);
+            nxfs_commit();
         }
-        extern int nxfs_sync_dirent(vfs_node_t *);
-        extern int nxfs_commit(void);
-        nxfs_sync_dirent(n);
-        nxfs_commit();
     }
 
     for (int i = 0; i < MAX_FDS; i++) {
@@ -274,8 +347,6 @@ int vfs_fd_write(int fd, const uint8_t *buf, uint32_t len) {
     int n = vfs_write(fd_table[fd].node, fd_table[fd].offset, buf, len);
     if (n > 0) fd_table[fd].offset += n;
 
-    extern int nxfs_sync_dirent(vfs_node_t *);
-    extern int nxfs_commit(void);
     nxfs_sync_dirent(fd_table[fd].node);
     nxfs_commit();
 

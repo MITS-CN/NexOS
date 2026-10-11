@@ -2,6 +2,7 @@
 #include "ata.h"
 #include "block_cache.h"
 #include "heap.h"
+#include "thread.h"   /* ★ S7c */
 
 typedef struct {
     uint32_t magic;
@@ -15,10 +16,12 @@ typedef struct {
     uint8_t  reserved[512 - 32];
 } __attribute__((packed)) nxfs_super_t;
 
+/* ★ S7c: reserved[3] → mode(2) + uid(1) */
 typedef struct {
     char     name[24];
     uint8_t  type;
-    uint8_t  reserved[3];
+    uint16_t mode;
+    uint8_t  uid;
     uint32_t size;
     uint32_t first_block;
 } __attribute__((packed)) nxfs_dirent_t;
@@ -28,17 +31,13 @@ static uint32_t    *fat_cache = 0;
 static vfs_node_t  *root = 0;
 static int          mounted = 0;
 
-/* ★ C3+ : FAT 脏扇区位图（每字节 = 1 个 512B FAT 扇区）
-   FAT 共 64 扇区，每扇区 128 项（4 字节/项） */
 #define FAT_SECTORS_MAX 64
 static uint8_t fat_dirty[FAT_SECTORS_MAX];
 
-/* 块号 i 所在的 FAT 扇区索引 */
 static inline int fat_sector_of(uint32_t block) {
     return (int)(block / 128);
 }
 
-/* ★ 统一的 FAT 项写接口：改 fat_cache + 标脏 */
 static inline void fat_set(uint32_t block, uint32_t val) {
     if (block >= super.total_blocks) return;
     fat_cache[block] = val;
@@ -71,18 +70,14 @@ static void free_children_recursive(vfs_node_t *n) {
     n->children = 0;
 }
 
-/* ★ 只刷脏扇区 */
 static int fat_flush(void) {
-    int any = 0;
     for (int i = 0; i < (int)super.fat_sectors; i++) {
         if (!fat_dirty[i]) continue;
         if (ata_write_sectors(NXFS_PART_LBA + super.fat_lba + i, 1,
                               (uint8_t *)fat_cache + i * 512) < 0)
             return -1;
         fat_dirty[i] = 0;
-        any = 1;
     }
-    (void)any;
     return 0;
 }
 
@@ -97,7 +92,6 @@ static int fat_load(void) {
             return -1;
         done += cnt;
     }
-    /* ★ 刚读完，无脏 */
     for (int i = 0; i < FAT_SECTORS_MAX; i++) fat_dirty[i] = 0;
     return 0;
 }
@@ -311,7 +305,8 @@ static int dir_remove(uint32_t dir_block, const char *name) {
 }
 
 static vfs_node_t *node_alloc(const char *name, int type,
-                              uint32_t disk_block, uint32_t size) {
+                              uint32_t disk_block, uint32_t size,
+                              uint16_t mode, uint16_t uid) {
     vfs_node_t *n = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
     if (!n) return 0;
 
@@ -326,6 +321,15 @@ static vfs_node_t *node_alloc(const char *name, int type,
     n->disk_block = disk_block;
     n->read_fn    = 0;
     n->is_dynamic = 0;
+
+    /* ★ S7c: 兼容 —— mode==0 视为未初始化，填默认 */
+    if (mode == 0)
+        mode = (type == VFS_DIR) ? VFS_DEF_DIR_MODE : VFS_DEF_FILE_MODE;
+
+    n->mode = mode;
+    n->uid  = uid;
+    n->gid  = 0;
+
     n->parent     = 0;
     n->children   = 0;
     n->next       = 0;
@@ -339,7 +343,8 @@ static void build_tree(vfs_node_t *dir_node, uint32_t dir_block) {
 
         int type = (ent.type == 2) ? VFS_DIR : VFS_FILE;
         vfs_node_t *child = node_alloc(ent.name, type,
-                                       ent.first_block, ent.size);
+                                       ent.first_block, ent.size,
+                                       ent.mode, ent.uid);
         if (!child) continue;
 
         child->parent = dir_node;
@@ -358,37 +363,34 @@ static void build_tree(vfs_node_t *dir_node, uint32_t dir_block) {
 }
 
 static vfs_node_t *nxfs_create(vfs_node_t *parent, const char *name, int type) {
-    if (!parent || parent->type != VFS_DIR) {
-        return 0;
-    }
+    if (!parent || parent->type != VFS_DIR) return 0;
 
     uint32_t first_block = 0xFFFFFFFFu;
 
     if (type == VFS_DIR) {
         first_block = nxfs_alloc_block();
-        if (first_block == NXFS_EOF) {
-            return 0;
-        }
+        if (first_block == NXFS_EOF) return 0;
         static uint8_t zero[NXFS_BLOCK_SIZE];
         for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) zero[i] = 0;
-        if (nxfs_write_block(first_block, zero) < 0) {
-            return 0;
-        }
+        if (nxfs_write_block(first_block, zero) < 0) return 0;
     }
+
+    uint16_t uid = current_thread ? current_thread->uid : 0;
+    uint16_t mode = (type == VFS_DIR) ? VFS_DEF_DIR_MODE : VFS_DEF_FILE_MODE;
 
     nxfs_dirent_t ent;
     for (int i = 0; i < 24; i++) ent.name[i] = 0;
     int i = 0;
     while (name[i] && i < 23) { ent.name[i] = name[i]; i++; }
-    ent.type = (type == VFS_DIR) ? 2 : 1;
-    ent.reserved[0] = ent.reserved[1] = ent.reserved[2] = 0;
-    ent.size = 0;
+    ent.type        = (type == VFS_DIR) ? 2 : 1;
+    ent.mode        = mode;    /* ★ S7c */
+    ent.uid         = (uint8_t)uid;
+    ent.size        = 0;
     ent.first_block = first_block;
 
-    if (dir_insert(parent->disk_block, &ent) < 0) {
-        return 0;
-    }
-    vfs_node_t *n = node_alloc(name, type, first_block, 0);
+    if (dir_insert(parent->disk_block, &ent) < 0) return 0;
+
+    vfs_node_t *n = node_alloc(name, type, first_block, 0, mode, uid);
     if (!n) return 0;
     n->parent = parent;
 
@@ -465,7 +467,6 @@ int nxfs_format(void) {
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) zero[i] = 0;
     if (nxfs_write_block(0, zero) < 0) return -2;
 
-    /* 格式化时直接整 FAT 写一次（一次性，不走 dirty 逻辑） */
     for (uint32_t i = 0; i < super.fat_sectors; i++) {
         if (ata_write_sectors(NXFS_PART_LBA + super.fat_lba + i, 1,
                               (uint8_t *)fat_cache + i * 512) < 0)
@@ -546,7 +547,8 @@ int nxfs_init(void) {
         if (fat_load() < 0) { vga_puts("  [nxfs] fat_load failed\n"); return -4; }
     }
 
-    root = node_alloc("/", VFS_DIR, super.root_block, 0);
+    root = node_alloc("/", VFS_DIR, super.root_block, 0,
+                      VFS_DEF_DIR_MODE, 0);
     if (!root) { vga_puts("  [nxfs] root alloc failed\n"); return -5; }
     build_tree(root, super.root_block);
 
@@ -555,6 +557,7 @@ int nxfs_init(void) {
     return 0;
 }
 
+/* ★ S7c: 同步 size / first_block / mode / uid */
 int nxfs_sync_dirent(vfs_node_t *node) {
     if (!node || !node->parent) return -1;
 
@@ -572,6 +575,8 @@ int nxfs_sync_dirent(vfs_node_t *node) {
             if (name_match(ents[i].name, node->name)) {
                 ents[i].size        = node->size;
                 ents[i].first_block = node->disk_block;
+                ents[i].mode        = node->mode;
+                ents[i].uid         = (uint8_t)node->uid;
                 return nxfs_write_block(cur, block_buf);
             }
         }

@@ -32,11 +32,13 @@ thread_t *thread_create_user(void (*entry)(void)) {
 
     t->stack_base = t->kernel_stack;
     t->entry      = entry;
-    t->entry_esp  = 0;      /* ★ S7a: 走兜底 */
+    t->entry_esp  = 0;
     t->id         = next_id++;
     t->state      = THREAD_READY;
     t->is_user    = 1;
     t->page_dir   = 0;
+    t->uid        = 0;      /* ★ S7c */
+    t->gid        = 0;
     t->msg_head   = 0;
     t->msg_tail   = 0;
     t->next       = 0;
@@ -66,10 +68,12 @@ thread_t *thread_create_elf(uint32_t entry, uint32_t stack_top,
     t->user_stack = (uint32_t *)(stack_top - 16 * 1024);
     t->stack_base = t->kernel_stack;
     t->entry      = (void (*)(void))entry;
-    t->entry_esp  = entry_esp;   /* ★ S7a */
+    t->entry_esp  = entry_esp;
     t->id         = next_id++;
     t->state      = THREAD_READY;
     t->is_user    = 1;
+    t->uid        = 0;      /* ★ S7c */
+    t->gid        = 0;
     t->msg_head   = 0;
     t->msg_tail   = 0;
     t->next       = 0;
@@ -100,11 +104,13 @@ thread_t *thread_create(void (*entry)(void)) {
     t->kernel_stack = stack;
     t->user_stack   = 0;
     t->entry        = entry;
-    t->entry_esp    = 0;      /* 内核线程不用 */
+    t->entry_esp    = 0;
     t->id           = next_id++;
     t->state        = THREAD_READY;
     t->is_user      = 0;
     t->page_dir     = 0;
+    t->uid          = 0;    /* ★ S7c */
+    t->gid          = 0;
     t->msg_head     = 0;
     t->msg_tail     = 0;
     t->next         = 0;

@@ -58,6 +58,9 @@ extern int  vga_fetch_log(uint8_t *dst, uint32_t dst_size, void *info_ptr);
 #define SYS_VGA_FETCH_LOG  30
 #define SYS_SHM_ALLOC      31
 #define SYS_ATA_ACTIVATE   32
+#define SYS_CHMOD          33   /* ★ S7c-2 */
+#define SYS_CHOWN          34   /* ★ S7c-2 */
+#define SYS_STAT           35   /* ★ S7c-2 */
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -117,7 +120,7 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             vga_puts((const char *)a);
             return 0;
         }
-                case SYS_OPEN: {
+        case SYS_OPEN: {
             if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
             return vfs_open((const char *)a, (int)b);
         }
@@ -311,6 +314,45 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return 0;
         }
 
+        /* ★ S7c-2: chmod */
+        case SYS_CHMOD: {
+            if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
+            vfs_node_t *n = vfs_lookup((const char *)a);
+            if (!n || n == vfs_root()) return -1;
+            return vfs_chmod(n, (uint16_t)(b & VFS_MODE_MASK));
+        }
+
+        /* ★ S7c-2: chown */
+        case SYS_CHOWN: {
+            if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
+            vfs_node_t *n = vfs_lookup((const char *)a);
+            if (!n || n == vfs_root()) return -1;
+            return vfs_chown(n, (uint16_t)(b & 0xFFFF));
+        }
+
+        /* ★ S7c-2: stat — 打包 mode/uid/size/type 到 16 字节用户缓冲 */
+        case SYS_STAT: {
+            if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
+            if (!user_range_ok(b, 16)) return -1;
+
+            vfs_node_t *n = vfs_lookup((const char *)a);
+            if (!n) return -1;
+
+            uint8_t *out = (uint8_t *)b;
+            uint16_t m = n->mode;
+            out[0] = m & 0xFF;
+            out[1] = (m >> 8) & 0xFF;
+            out[2] = n->uid & 0xFF;
+            out[3] = (n->uid >> 8) & 0xFF;
+            out[4] = n->size & 0xFF;
+            out[5] = (n->size >> 8) & 0xFF;
+            out[6] = (n->size >> 16) & 0xFF;
+            out[7] = (n->size >> 24) & 0xFF;
+            out[8] = (uint8_t)n->type;
+            for (int i = 9; i < 16; i++) out[i] = 0;
+            return 0;
+        }
+
         case SYS_SEND: {
             int tid = (int)a;
             if (!user_range_ok(b, sizeof(user_msg_t))) return -1;
@@ -445,7 +487,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return t->id;
         }
 
-        /* ★ S7b: 后台 exec，带 argv；父进程不阻塞 */
         case SYS_EXEC_BG: {
             if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
 
@@ -506,7 +547,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
 
             t->prev_owner = current_thread;
 
-            /* 后台：不阻塞父进程 */
             return t->id;
         }
 

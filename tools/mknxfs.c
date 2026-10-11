@@ -13,6 +13,9 @@
 #define NXFS_FREE           0x00000000u
 #define NXFS_EOF            0xFFFFFFFFu
 
+#define DEF_FILE_MODE  0644
+#define DEF_DIR_MODE   0755
+
 typedef struct {
     uint32_t magic;
     uint32_t version;
@@ -25,10 +28,12 @@ typedef struct {
     uint8_t  reserved[512 - 32];
 } __attribute__((packed)) nxfs_super_t;
 
+/* ★ S7c: reserved[3] → mode(2) + uid(1) */
 typedef struct {
     char     name[24];
-    uint8_t  type;      /* 1=file, 2=dir */
-    uint8_t  reserved[3];
+    uint8_t  type;
+    uint16_t mode;
+    uint8_t  uid;
     uint32_t size;
     uint32_t first_block;
 } __attribute__((packed)) nxfs_dirent_t;
@@ -38,7 +43,6 @@ typedef struct {
 static FILE          *img;
 static uint32_t       fat[NXFS_MAX_BLOCKS];
 
-/* 内存中的目录块缓存 */
 typedef struct {
     uint32_t       block;
     nxfs_dirent_t  ents[DIRENTS_PER_BLOCK];
@@ -96,8 +100,6 @@ static uint32_t write_file_chain(const void *data, uint32_t size) {
     return first;
 }
 
-/* ---- 目录块缓存 ---- */
-
 static dbuf_t *dbuf_get(uint32_t block) {
     for (int i = 0; i < dbuf_count; i++) {
         if (dbufs[i].used && dbufs[i].block == block) return &dbufs[i];
@@ -117,14 +119,16 @@ static dbuf_t *dbuf_new(uint32_t block) {
     return d;
 }
 
-/* 在 dir 里找个空槽加一个项，返回 0 成功 */
 static int dir_add_entry(dbuf_t *dir, const char *name, uint8_t type,
+                         uint16_t mode, uint8_t uid,
                          uint32_t size, uint32_t first_block) {
     for (int i = 0; i < DIRENTS_PER_BLOCK; i++) {
         if (dir->ents[i].type == 0) {
             memset(&dir->ents[i], 0, sizeof(nxfs_dirent_t));
             strncpy(dir->ents[i].name, name, 23);
             dir->ents[i].type = type;
+            dir->ents[i].mode = mode;
+            dir->ents[i].uid  = uid;
             dir->ents[i].size = size;
             dir->ents[i].first_block = first_block;
             return 0;
@@ -133,7 +137,6 @@ static int dir_add_entry(dbuf_t *dir, const char *name, uint8_t type,
     return -1;
 }
 
-/* 在 dir 里找 name，找到返回槽索引，找不到返回 -1 */
 static int dir_find(dbuf_t *dir, const char *name) {
     for (int i = 0; i < DIRENTS_PER_BLOCK; i++) {
         if (dir->ents[i].type == 0) continue;
@@ -142,8 +145,6 @@ static int dir_find(dbuf_t *dir, const char *name) {
     return -1;
 }
 
-/* 走路径（如 "system/init"），create=1 时自动创建中间目录。
-   返回目标目录的块号，失败返回 NXFS_EOF。 */
 static uint32_t walk_dir(const char *path, int create) {
     uint32_t cur_block = 0;
     dbuf_t  *cur_dir = dbuf_get(0);
@@ -164,7 +165,6 @@ static uint32_t walk_dir(const char *path, int create) {
         int idx = dir_find(cur_dir, seg);
         if (idx >= 0) {
             if (cur_dir->ents[idx].type != 2) {
-                /* 是文件，不能往下走 */
                 return NXFS_EOF;
             }
             cur_block = cur_dir->ents[idx].first_block;
@@ -174,7 +174,8 @@ static uint32_t walk_dir(const char *path, int create) {
             if (!create) return NXFS_EOF;
             uint32_t nb = alloc_block();
             dbuf_new(nb);
-            if (dir_add_entry(cur_dir, seg, 2, 0, nb) < 0) return NXFS_EOF;
+            if (dir_add_entry(cur_dir, seg, 2, DEF_DIR_MODE, 0, 0, nb) < 0)
+                return NXFS_EOF;
             cur_block = nb;
             cur_dir = dbuf_get(nb);
         }
@@ -182,8 +183,6 @@ static uint32_t walk_dir(const char *path, int create) {
     return cur_block;
 }
 
-/* 处理一个 spec "hostpath:destpath"
-   destpath 如 "system/init/init.elf" 或 "init.elf" */
 static void process_spec(const char *spec) {
     char buf[512];
     if (strlen(spec) >= 512) {
@@ -201,7 +200,6 @@ static void process_spec(const char *spec) {
     const char *hostpath = buf;
     const char *destpath = colon + 1;
 
-    /* 解析 destpath：拆成父目录 + 文件名 */
     char parent[256];
     char fname[24];
     int last_slash = -1;
@@ -230,7 +228,6 @@ static void process_spec(const char *spec) {
         exit(1);
     }
 
-    /* 找/创建父目录 */
     uint32_t parent_block = walk_dir(parent, 1);
     if (parent_block == NXFS_EOF) {
         fprintf(stderr, "mknxfs: cannot create path '%s'\n", parent);
@@ -244,7 +241,6 @@ static void process_spec(const char *spec) {
         exit(1);
     }
 
-    /* 读 host 文件 */
     FILE *f = fopen(hostpath, "rb");
     if (!f) die(hostpath);
     fseek(f, 0, SEEK_END);
@@ -259,7 +255,8 @@ static void process_spec(const char *spec) {
     uint32_t first = write_file_chain(data, (uint32_t)sz);
     free(data);
 
-    if (dir_add_entry(pdir, fname, 1, (uint32_t)sz, first) < 0) {
+    if (dir_add_entry(pdir, fname, 1, DEF_FILE_MODE, 0,
+                      (uint32_t)sz, first) < 0) {
         fprintf(stderr, "mknxfs: dir full for '%s'\n", destpath);
         exit(1);
     }
@@ -282,7 +279,6 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < NXFS_MAX_BLOCKS; i++) fat[i] = NXFS_FREE;
 
-    /* 块 0 = 根目录 */
     fat[0] = NXFS_EOF;
     dbuf_new(0);
 
@@ -290,16 +286,13 @@ int main(int argc, char **argv) {
         process_spec(argv[a]);
     }
 
-    /* 所有目录块写回 */
     for (int i = 0; i < dbuf_count; i++) {
         if (dbufs[i].used)
             write_block(dbufs[i].block, dbufs[i].ents);
     }
 
-    /* FAT 写回 */
     write_at((uint64_t)2 * 512, fat, NXFS_FAT_SECTORS * 512);
 
-    /* 超级块 */
     nxfs_super_t super;
     memset(&super, 0, sizeof(super));
     super.magic         = NXFS_MAGIC;

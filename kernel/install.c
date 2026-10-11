@@ -13,6 +13,9 @@ extern char _kernel_raw_end[];
 #define NXFS_BLOCK_SIZE     (NXFS_BLOCK_SECTORS * 512)
 #define NXFS_DIRENT_SIZE    36
 
+#define DEF_FILE_MODE  0644
+#define DEF_DIR_MODE   0755
+
 static int installer_mode = 0;
 
 void install_set_installer_mode(int on) { installer_mode = on; }
@@ -67,14 +70,19 @@ static int write_kernel(int drv) {
     return 0;
 }
 
+/* ★ S7c: 加 mode / uid */
 static void set_dirent(uint8_t *block, int slot,
                        const char *name, int type,
+                       uint16_t mode, uint16_t uid,
                        uint32_t size, uint32_t first_block) {
     uint8_t *e = block + slot * NXFS_DIRENT_SIZE;
     for (int i = 0; i < NXFS_DIRENT_SIZE; i++) e[i] = 0;
     int i = 0;
     while (name[i] && i < 23) { e[i] = (uint8_t)name[i]; i++; }
     e[24] = (uint8_t)type;
+    e[25] = mode & 0xFF;
+    e[26] = (mode >> 8) & 0xFF;
+    e[27] = (uint8_t)uid;
     e[28] =  size        & 0xFF;
     e[29] = (size >> 8)  & 0xFF;
     e[30] = (size >> 16) & 0xFF;
@@ -164,23 +172,24 @@ static int write_nxfs(int drv) {
     uint8_t blk[NXFS_BLOCK_SIZE];
 
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
-    set_dirent(blk, 0, "system", 2, 0, 1);
+    set_dirent(blk, 0, "system", 2, DEF_DIR_MODE, 0, 0, 1);
     if (write_data_block(drv, 0, blk) < 0) return -1;
 
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
-    set_dirent(blk, 0, "init",  2, 0, 2);
-    set_dirent(blk, 1, "drive", 2, 0, 3);
+    set_dirent(blk, 0, "init",  2, DEF_DIR_MODE, 0, 0, 2);
+    set_dirent(blk, 1, "drive", 2, DEF_DIR_MODE, 0, 0, 3);
     if (write_data_block(drv, 1, blk) < 0) return -1;
 
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
-    set_dirent(blk, 0, "init.elf", 1, init_size, init_first);
+    set_dirent(blk, 0, "init.elf", 1, DEF_FILE_MODE, 0,
+               init_size, init_first);
     if (write_data_block(drv, 2, blk) < 0) return -1;
 
     for (uint32_t i = 0; i < NXFS_BLOCK_SIZE; i++) blk[i] = 0;
-    set_dirent(blk, 0, "kbd.elf",   1, kbd_size,   kbd_first);
-    set_dirent(blk, 1, "vga.elf",   1, vga_size,   vga_first);
-    set_dirent(blk, 2, "mouse.elf", 1, mouse_size, mouse_first);
-    set_dirent(blk, 3, "atad.elf",  1, atad_size,  atad_first);
+    set_dirent(blk, 0, "kbd.elf",   1, DEF_FILE_MODE, 0, kbd_size,   kbd_first);
+    set_dirent(blk, 1, "vga.elf",   1, DEF_FILE_MODE, 0, vga_size,   vga_first);
+    set_dirent(blk, 2, "mouse.elf", 1, DEF_FILE_MODE, 0, mouse_size, mouse_first);
+    set_dirent(blk, 3, "atad.elf",  1, DEF_FILE_MODE, 0, atad_size,  atad_first);
     if (write_data_block(drv, 3, blk) < 0) return -1;
 
     struct { const uint8_t *p; uint32_t size; uint32_t first; } jobs[5] = {

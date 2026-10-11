@@ -30,6 +30,15 @@ typedef struct {
     uint32_t _pad;
 } klog_info_t;
 
+/* ★ S7c-2: stat 结构（和内核 SYS_STAT 打包格式对应） */
+typedef struct {
+    uint16_t mode;
+    uint16_t uid;
+    uint32_t size;
+    uint8_t  type;      /* 1=file, 2=dir */
+    uint8_t  _pad[7];
+} stat_t;
+
 #define IRQ_NO_READ  0xFFFFu
 
 #define SHM_SIZE       8192
@@ -281,7 +290,6 @@ static inline int sys_send(int tid, const user_msg_t *m) {
     return r;
 }
 
-/* ★ S7b: 后台 exec 也带 argc/argv */
 static inline int sys_exec_bg(const char *path, int argc,
                               const char *const *argv) {
     int r;
@@ -352,6 +360,34 @@ static inline int sys_ata_activate(void) {
         : "=a"(r)
         : "0"(32)
         : "ebx", "ecx", "edx", "esi", "edi", "memory");
+    return r;
+}
+
+/* ★ S7c-2 */
+static inline int sys_chmod(const char *path, uint16_t mode) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(33), "b"(path), "c"((int)mode)
+        : "edx", "esi", "edi", "memory");
+    return r;
+}
+
+static inline int sys_chown(const char *path, uint16_t uid) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(34), "b"(path), "c"((int)uid)
+        : "edx", "esi", "edi", "memory");
+    return r;
+}
+
+static inline int sys_stat(const char *path, stat_t *st) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(35), "b"(path), "c"(st)
+        : "edx", "esi", "edi", "memory");
     return r;
 }
 

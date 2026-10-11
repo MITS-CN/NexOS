@@ -58,14 +58,30 @@ build/%.o: kernel/%.S | build
 build/entry.o: kernel/entry.S | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# ============================================================
+# 用户程序
+# ============================================================
 build/user_start.o: user/start.S | build
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-build/user_main.o: user/main.c | build
+build/user_main.o: user/main.c user/shell.h | build
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-build/init.elf: build/user_start.o build/user_main.o user/user.ld
-	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/user_main.o
+build/shell_util.o: user/shell_util.c user/shell.h | build
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+build/cmd_file.o: user/cmd_file.c user/shell.h | build
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+build/cmd_dev.o: user/cmd_dev.c user/shell.h | build
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+build/init.elf: build/user_start.o build/user_main.o \
+                build/shell_util.o build/cmd_file.o build/cmd_dev.o \
+                user/user.ld
+	$(CC) $(USER_LDFLAGS) -o $@ \
+	    build/user_start.o build/user_main.o \
+	    build/shell_util.o build/cmd_file.o build/cmd_dev.o
 
 build/kbd_main.o: user/kbd.c | build
 	$(CC) $(USER_CFLAGS) -c $< -o $@
@@ -85,13 +101,15 @@ build/mouse_main.o: user/mouse.c | build
 build/mouse.elf: build/user_start.o build/mouse_main.o user/user.ld
 	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/mouse_main.o
 
-# ★ S6b
 build/atad_main.o: user/atad.c | build
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 build/atad.elf: build/user_start.o build/atad_main.o user/user.ld
 	$(CC) $(USER_LDFLAGS) -o $@ build/user_start.o build/atad_main.o
 
+# ============================================================
+# 内核 ELF
+# ============================================================
 build/NexOS-NEXT.elf: $(OBJS) linker.ld
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lgcc
 
