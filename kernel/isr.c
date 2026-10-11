@@ -55,6 +55,16 @@ void isr_handler(struct regs *r) {
         if (r->err_code) {
             vga_puts("  err_code="); vga_hex(r->err_code); vga_putc('\n');
         }
+
+
+        //debug
+        
+        {
+            uint32_t cr2;
+            __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+            vga_puts("  CR2="); vga_hex(cr2); vga_putc('\n');
+        }
+
         dump_regs(r);
         vga_puts("\nSystem halted.\n");
         for (;;) __asm__ volatile("cli; hlt");

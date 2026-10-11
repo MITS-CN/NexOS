@@ -58,9 +58,11 @@ extern int  vga_fetch_log(uint8_t *dst, uint32_t dst_size, void *info_ptr);
 #define SYS_VGA_FETCH_LOG  30
 #define SYS_SHM_ALLOC      31
 #define SYS_ATA_ACTIVATE   32
-#define SYS_CHMOD          33   /* ★ S7c-2 */
-#define SYS_CHOWN          34   /* ★ S7c-2 */
-#define SYS_STAT           35   /* ★ S7c-2 */
+#define SYS_CHMOD          33
+#define SYS_CHOWN          34
+#define SYS_STAT           35
+#define SYS_SETUID         36   /* ★ S7c-3 */
+#define SYS_GETUID         37   /* ★ S7c-3 */
 
 extern void isr128(void);
 extern void vga_putc(char c);
@@ -314,7 +316,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return 0;
         }
 
-        /* ★ S7c-2: chmod */
         case SYS_CHMOD: {
             if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
             vfs_node_t *n = vfs_lookup((const char *)a);
@@ -322,7 +323,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return vfs_chmod(n, (uint16_t)(b & VFS_MODE_MASK));
         }
 
-        /* ★ S7c-2: chown */
         case SYS_CHOWN: {
             if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
             vfs_node_t *n = vfs_lookup((const char *)a);
@@ -330,7 +330,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             return vfs_chown(n, (uint16_t)(b & 0xFFFF));
         }
 
-        /* ★ S7c-2: stat — 打包 mode/uid/size/type 到 16 字节用户缓冲 */
         case SYS_STAT: {
             if (!user_str_ok((const char *)a, MAX_PATH)) return -1;
             if (!user_range_ok(b, 16)) return -1;
@@ -351,6 +350,28 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             out[8] = (uint8_t)n->type;
             for (int i = 9; i < 16; i++) out[i] = 0;
             return 0;
+        }
+
+        /* ★ S7c-3: 设置 uid（降权不可逆；非 root 不能改 uid） */
+        case SYS_SETUID: {
+            if (!current_thread || !current_thread->is_user) return -1;
+            uint16_t uid = (uint16_t)(a & 0xFFFF);
+
+            if (current_thread->uid == 0) {
+                /* root：可以设任意 uid */
+                current_thread->uid = uid;
+                return 0;
+            }
+
+            /* 非 root：只能 no-op 或降权到自己已属于的 uid */
+            if (uid == current_thread->uid) return 0;
+            return -1;
+        }
+
+        /* ★ S7c-3: 查询 uid */
+        case SYS_GETUID: {
+            if (!current_thread) return -1;
+            return (int)current_thread->uid;
         }
 
         case SYS_SEND: {
@@ -447,6 +468,24 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             }
             kargv[argc] = 0;
 
+
+            //debug
+
+
+            {
+                extern void vga_puts(const char *);
+                extern void vga_hex(uint32_t);
+                vga_puts("[DBG] argc=");
+                vga_hex((uint32_t)argc);
+                vga_puts(" kargv[0]=");
+                vga_hex((uint32_t)kargv[0]);
+                vga_puts(" kargv[1]=");
+                vga_hex((uint32_t)kargv[1]);
+                vga_puts(" kargv[2]=");
+                vga_hex((uint32_t)kargv[2]);
+                vga_puts("\n");
+            }
+
             int fd = vfs_open(kpath, 0);
             if (fd < 0) return -2;
 
@@ -463,8 +502,12 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             uint32_t *dir = paging_create_dir();
             if (!dir) { kfree(buf); return -6; }
 
+            if (!dir) { kfree(buf); return -6; }
+
             elf_load_result_t elf;
             int r = elf_load_to_dir(dir, buf, sz, &elf);
+
+
             kfree(buf);
             if (r != 0) return -7;
 
@@ -478,6 +521,10 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             thread_t *t = thread_create_elf(elf.entry, elf.stack_top, dir,
                                             entry_esp);
             if (!t) return -8;
+
+            /* ★ S7c-3: uid/gid 继承 */
+            t->uid = current_thread->uid;
+            t->gid = current_thread->gid;
 
             t->prev_owner = current_thread;
 
@@ -544,6 +591,10 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             thread_t *t = thread_create_elf(elf.entry, elf.stack_top, dir,
                                             entry_esp);
             if (!t) return -8;
+
+            /* ★ S7c-3: uid/gid 继承 */
+            t->uid = current_thread->uid;
+            t->gid = current_thread->gid;
 
             t->prev_owner = current_thread;
 

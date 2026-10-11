@@ -13,14 +13,12 @@
 #define HIST_MAX  32
 #define HIST_PATH "/user/ROOT/commands.history"
 
-/* 全局状态（定义在 main.c） */
 extern char cwd[MAX_PATH];
 extern int  g_kbd_tid;
 extern int  g_vga_tid;
 extern int  g_mouse_tid;
 extern int  g_atad_tid;
 
-/* 工具（shell_util.c） */
 void putc_(char c);
 void puts_(const char *s);
 int  str_len(const char *s);
@@ -36,13 +34,11 @@ uint32_t parse_oct(const char *s);
 uint32_t parse_u32(const char *s);
 void resolve_path(const char *in, char *out, int out_size);
 
-/* 通用命令（main.c） */
 void cmd_help(void);
 void cmd_pwd(void);
 void cmd_cd(const char *args);
 void cmd_mem(void);
 
-/* 文件命令（cmd_file.c） */
 void cmd_ls(const char *args);
 void cmd_cat(const char *args);
 void cmd_mkdir(const char *args);
@@ -54,7 +50,6 @@ void cmd_cp(const char *args);
 void cmd_chmod(const char *args);
 void cmd_chown(const char *args);
 
-/* 设备/系统命令（cmd_dev.c） */
 void cmd_part(const char *args);
 void cmd_mkpart(const char *args);
 void cmd_install(const char *args);
@@ -70,5 +65,9 @@ void cmd_killmouse(void);
 void cmd_mousetid(void);
 void cmd_killatad(void);
 void cmd_atadtid(void);
+
+/* ★ S7c-3 */
+void cmd_setuid(const char *args);
+void cmd_id(void);
 
 #endif

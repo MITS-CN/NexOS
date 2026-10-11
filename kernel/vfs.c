@@ -1,7 +1,7 @@
 ﻿#include "vfs.h"
 #include "ramfs.h"
 #include "heap.h"
-#include "thread.h"   /* ★ S7c: current_thread->uid */
+#include "thread.h"
 
 extern uint32_t nxfs_read_chain(uint32_t start, uint32_t offset,
                                 uint8_t *buf, uint32_t len);
@@ -65,25 +65,28 @@ static vfs_node_t *find_child(vfs_node_t *dir, const char *name) {
     return 0;
 }
 
-/* ★ S7c: 权限检查
-   uid 0 (root) 全通过
-   否则按 uid == node->uid 选 owner 位，不同则按 other 位
-   group 检查暂时跳过（gid 全 0） */
+/* ★ S7c-3: 修 bug — need 可能是 owner 位（0400）等，转成 3-bit */
 int vfs_has_perm(vfs_node_t *n, int need) {
     if (!n) return 0;
     uint16_t uid = current_thread ? current_thread->uid : 0;
     if (uid == 0) return 1;
 
     uint16_t m = n->mode & VFS_MODE_MASK;
-    if (m == 0) m = (n->type == VFS_DIR) ? VFS_DEF_DIR_MODE : VFS_DEF_FILE_MODE;
+    if (m == 0)
+        m = (n->type == VFS_DIR) ? VFS_DEF_DIR_MODE : VFS_DEF_FILE_MODE;
+
+    int bits = 0;
+    if (need & (VFS_R_USR | VFS_R_GRP | VFS_R_OTH)) bits |= 4;
+    if (need & (VFS_W_USR | VFS_W_GRP | VFS_W_OTH)) bits |= 2;
+    if (need & (VFS_X_USR | VFS_X_GRP | VFS_X_OTH)) bits |= 1;
 
     uint16_t perm;
     if (uid == n->uid)
-        perm = (m >> 6) & 7;    /* owner 位 */
+        perm = (m >> 6) & 7;
     else
-        perm = m & 7;           /* other 位（暂时没 group 概念） */
+        perm = m & 7;
 
-    return (perm & need) == need;
+    return (perm & bits) == bits;
 }
 
 int vfs_chmod(vfs_node_t *n, uint16_t mode) {
@@ -182,7 +185,6 @@ vfs_node_t *vfs_create(const char *path, int type) {
     if (!parent || parent->type != VFS_DIR) return 0;
     if (find_child(parent, base)) return 0;
 
-    /* ★ S7c: 创建后设默认 mode/uid */
     vfs_node_t *n = backend->create(parent, base, type);
     if (!n) return 0;
 
@@ -191,7 +193,6 @@ vfs_node_t *vfs_create(const char *path, int type) {
     n->uid  = uid;
     n->gid  = 0;
 
-    /* 落盘 */
     if (n->disk_block != NO_DISK_BLOCK) {
         nxfs_sync_dirent(n);
         nxfs_commit();
@@ -287,7 +288,6 @@ int vfs_read(vfs_node_t *node, uint32_t offset,
     return (int)len;
 }
 
-/* ★ S7c: 加权限检查 */
 int vfs_open(const char *path, int flags) {
     vfs_node_t *n = vfs_lookup(path);
 
@@ -298,12 +298,11 @@ int vfs_open(const char *path, int flags) {
         n = vfs_create(path, VFS_FILE);
         if (!n) return -1;
     } else {
-        /* 权限检查：读需要 R，写需要 W */
         int need = 0;
-        if ((flags & O_RDWR) == O_RDWR)          need = VFS_R_USR | VFS_W_USR;
-        else if (flags & O_WRONLY)               need = VFS_W_USR;
-        else if (flags & O_TRUNC)                need = VFS_W_USR;
-        else                                     need = VFS_R_USR;
+        if ((flags & O_RDWR) == O_RDWR)  need = VFS_R_USR | VFS_W_USR;
+        else if (flags & O_WRONLY)       need = VFS_W_USR;
+        else if (flags & O_TRUNC)        need = VFS_W_USR;
+        else                             need = VFS_R_USR;
 
         if (!creating && need && !vfs_has_perm(n, need))
             return -1;

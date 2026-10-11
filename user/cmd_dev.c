@@ -393,3 +393,32 @@ void cmd_killatad(void) {
 void cmd_atadtid(void) {
     puts_("atad.elf tid = "); print_dec(g_atad_tid); putc_('\n');
 }
+
+/* ★ S7c-3 */
+void cmd_setuid(const char *args) {
+    if (!args || !*args) { puts_("setuid: missing uid\n"); return; }
+
+    char word[16];
+    if (take_word(args, word, 16) == 0) {
+        puts_("setuid: missing uid\n");
+        return;
+    }
+
+    uint32_t uid = parse_u32(word);
+    int r = sys_setuid((uint16_t)(uid & 0xFFFF));
+    if (r < 0) {
+        puts_("setuid: failed (permission?)\n");
+    } else {
+        puts_("setuid: now uid=");
+        print_dec(sys_getuid());
+        putc_('\n');
+    }
+}
+
+void cmd_id(void) {
+    int uid = sys_getuid();
+    puts_("uid=");
+    print_dec(uid);
+    if (uid == 0) puts_(" (root)");
+    putc_('\n');
+}

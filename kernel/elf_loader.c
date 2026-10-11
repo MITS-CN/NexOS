@@ -106,28 +106,26 @@ int elf_load(const void *elf_data, uint32_t elf_size, elf_load_result_t *out) {
     return 0;
 }
 
+/* ★ S7c-3 修：CR3 切换期间禁中断
+   否则时钟中断可能触发调度，切走再切回来时 CR3 被还原成
+   current_thread->page_dir（和当前 dir 不一致），导致后续访问 #PF */
 int elf_load_to_dir(uint32_t *dir, const void *elf_data, uint32_t elf_size,
                     elf_load_result_t *out) {
     if (!dir) return -1;
 
     uint32_t *old = paging_get_dir();
+
+    __asm__ volatile("cli");
     paging_switch_dir(dir);
+
     int r = elf_load(elf_data, elf_size, out);
+
     paging_switch_dir(old);
+    __asm__ volatile("sti");
+
     return r;
 }
 
-/* ★ S7a: 把 argv 字符串 + 指针数组写到新进程用户栈
-   布局（高地址 → 低地址）：
-     [argv[n-1] 字符串]
-     ...
-     [argv[0] 字符串]
-     [argv[n-1] 指针]
-     ...
-     [argv[0] 指针]
-     [NULL]
-     [argc]            ← esp 指向这里
-*/
 int elf_setup_argv(uint32_t *dir, uint32_t stack_top, int argc,
                    const char *const *argv, uint32_t *out_esp) {
     if (!dir || argc < 0 || argc > 16) return -1;
@@ -155,6 +153,9 @@ int elf_setup_argv(uint32_t *dir, uint32_t stack_top, int argc,
     uint32_t str_va  = arr_va + arr_size;
 
     uint32_t *old = paging_get_dir();
+
+    /* ★ S7c-3 修：整个切换 + 写用户栈期间禁中断 */
+    __asm__ volatile("cli");
     paging_switch_dir(dir);
 
     *(volatile uint32_t *)argc_va = (uint32_t)argc;
@@ -177,6 +178,7 @@ int elf_setup_argv(uint32_t *dir, uint32_t stack_top, int argc,
     *(volatile uint32_t *)(arr_va + (uint32_t)argc * 4) = 0;
 
     paging_switch_dir(old);
+    __asm__ volatile("sti");
 
     *out_esp = esp;
     return 0;

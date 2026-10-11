@@ -30,12 +30,11 @@ typedef struct {
     uint32_t _pad;
 } klog_info_t;
 
-/* ★ S7c-2: stat 结构（和内核 SYS_STAT 打包格式对应） */
 typedef struct {
     uint16_t mode;
     uint16_t uid;
     uint32_t size;
-    uint8_t  type;      /* 1=file, 2=dir */
+    uint8_t  type;
     uint8_t  _pad[7];
 } stat_t;
 
@@ -363,7 +362,6 @@ static inline int sys_ata_activate(void) {
     return r;
 }
 
-/* ★ S7c-2 */
 static inline int sys_chmod(const char *path, uint16_t mode) {
     int r;
     __asm__ volatile("int $0x80"
@@ -388,6 +386,25 @@ static inline int sys_stat(const char *path, stat_t *st) {
         : "=a"(r)
         : "0"(35), "b"(path), "c"(st)
         : "edx", "esi", "edi", "memory");
+    return r;
+}
+
+/* ★ S7c-3 */
+static inline int sys_setuid(uint16_t uid) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(36), "b"((int)uid)
+        : "ecx", "edx", "esi", "edi", "memory");
+    return r;
+}
+
+static inline int sys_getuid(void) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(37)
+        : "ebx", "ecx", "edx", "esi", "edi", "memory");
     return r;
 }
 

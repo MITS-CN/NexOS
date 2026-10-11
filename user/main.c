@@ -1,6 +1,5 @@
 ﻿#include "shell.h"
 
-/* ★ 全局状态定义 */
 char cwd[MAX_PATH] = "/";
 int  g_kbd_tid   = -1;
 int  g_vga_tid   = -1;
@@ -17,8 +16,6 @@ static char cur_save[512];
 static int  cur_save_len = 0;
 
 static int  g_hist_fd = -1;
-
-/* ---- history ---- */
 
 static void ensure_hist_dirs(void) {
     int fd;
@@ -126,8 +123,6 @@ static void redraw_input(const char *s) {
     cmd_len  = n;
 }
 
-/* ---- 驱动重启 ---- */
-
 static void restart_kbd(void) {
     g_kbd_tid = sys_exec_bg("/system/drive/kbd.elf", 0, 0);
     if (g_kbd_tid < 0) {
@@ -196,8 +191,6 @@ static void restart_atad(void) {
     putc_('\n');
 }
 
-/* ---- 通用命令 ---- */
-
 void cmd_help(void) {
     puts_("Commands:\n");
     puts_("  help            - show this\n");
@@ -216,6 +209,8 @@ void cmd_help(void) {
     puts_("  rmdir <dir>     - delete empty directory\n");
     puts_("  chmod MODE PATH - change permission (octal)\n");
     puts_("  chown UID PATH  - change owner (root only)\n");
+    puts_("  id              - show current uid\n");
+    puts_("  setuid N        - drop to uid N (irreversible)\n");
     puts_("  exit            - exit shell\n");
     puts_("  part            - list partition table\n");
     puts_("  cp <src> <dst>  - copy file\n");
@@ -272,8 +267,6 @@ void cmd_mem(void) {
     while (i--) putc_(b[i]);
     puts_(" KB)\n");
 }
-
-/* ---- read_char / run_cmd ---- */
 
 static int read_char(void) {
     user_msg_t m;
@@ -360,6 +353,8 @@ static void run_cmd(void) {
     else if (str_eq(p, "mousetid")) cmd_mousetid();
     else if (str_eq(p, "killatad")) cmd_killatad();
     else if (str_eq(p, "atadtid")) cmd_atadtid();
+    else if (str_eq(p, "id"))     cmd_id();
+    else if (str_prefix(p, "setuid ")) cmd_setuid(p + 7);
     else { puts_("unknown: "); puts_(p); putc_('\n'); }
 
     cmd_len = 0;
