@@ -89,9 +89,5 @@ void irq_handler(struct regs *r) {
         irq_dispatch(irq_no);
     }
 
-    /* ★ S6.5-2: 如果本中断唤醒了一个 BLOCKED 线程（ipc_send 会设标志），
-       立即让出 CPU —— 被唤醒的线程不用再等时钟 tick */
-    if (sched_take_need_resched()) {
-        sched_yield();
-    }
+    (void)sched_take_need_resched();  /* 清空标志，避免残留 */
 }

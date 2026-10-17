@@ -37,7 +37,7 @@ thread_t *thread_create_user(void (*entry)(void)) {
     t->state      = THREAD_READY;
     t->is_user    = 1;
     t->page_dir   = 0;
-    t->uid        = 0;      /* ★ S7c */
+    t->uid        = 0;
     t->gid        = 0;
     t->msg_head   = 0;
     t->msg_tail   = 0;
@@ -72,7 +72,7 @@ thread_t *thread_create_elf(uint32_t entry, uint32_t stack_top,
     t->id         = next_id++;
     t->state      = THREAD_READY;
     t->is_user    = 1;
-    t->uid        = 0;      /* ★ S7c */
+    t->uid        = 0;
     t->gid        = 0;
     t->msg_head   = 0;
     t->msg_tail   = 0;
@@ -109,7 +109,7 @@ thread_t *thread_create(void (*entry)(void)) {
     t->state        = THREAD_READY;
     t->is_user      = 0;
     t->page_dir     = 0;
-    t->uid          = 0;    /* ★ S7c */
+    t->uid          = 0;
     t->gid          = 0;
     t->msg_head     = 0;
     t->msg_tail     = 0;

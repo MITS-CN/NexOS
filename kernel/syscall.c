@@ -454,7 +454,7 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             int argc = (int)b;
             if (argc < 0 || argc > 16) return -1;
 
-            char kargv_buf[16][128];
+            static char kargv_buf[16][128];
             const char *kargv[17];
             for (int k = 0; k < argc; k++) {
                 if (!user_range_ok(c + (uint32_t)k * 4, 4)) return -1;
@@ -546,7 +546,7 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             int argc = (int)b;
             if (argc < 0 || argc > 16) return -1;
 
-            char kargv_buf[16][128];
+            static char kargv_buf[16][128];
             const char *kargv[17];
             for (int k = 0; k < argc; k++) {
                 if (!user_range_ok(c + (uint32_t)k * 4, 4)) return -1;
