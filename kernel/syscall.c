@@ -208,6 +208,14 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             }
 
             shm_free_owner(current_thread->id);
+            
+            if (prev) {
+                message_t m;
+                m.sender  = current_thread->id;
+                m.type    = MSG_THREAD_DIED;
+                for (int i = 0; i < 8; i++) m.data[i] = 0;
+                ipc_send(prev->id, &m);
+            }
 
             if (prev && prev->state == THREAD_BLOCKED) {
                 prev->state = THREAD_READY;
@@ -468,23 +476,6 @@ int syscall_handler(uint32_t num, uint32_t a, uint32_t b,
             }
             kargv[argc] = 0;
 
-
-            //debug
-
-
-            {
-                extern void vga_puts(const char *);
-                extern void vga_hex(uint32_t);
-                vga_puts("[DBG] argc=");
-                vga_hex((uint32_t)argc);
-                vga_puts(" kargv[0]=");
-                vga_hex((uint32_t)kargv[0]);
-                vga_puts(" kargv[1]=");
-                vga_hex((uint32_t)kargv[1]);
-                vga_puts(" kargv[2]=");
-                vga_hex((uint32_t)kargv[2]);
-                vga_puts("\n");
-            }
 
             int fd = vfs_open(kpath, 0);
             if (fd < 0) return -2;

@@ -63,6 +63,11 @@ static void kbd_loop(void) {
             continue;
         }
 
+        if (m.type == MSG_KBD_TARGET) {
+            out_tid = (int)m.data[0];
+            continue;
+        }
+
         if (m.type == MSG_EXIT) {
             sys_exit();
         }

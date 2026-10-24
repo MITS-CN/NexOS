@@ -13,6 +13,16 @@
 #define HIST_MAX  32
 #define HIST_PATH "/user/ROOT/commands.history"
 
+/* ★ S7d: 作业控制 */
+#define MAX_JOBS  8
+
+typedef struct {
+    int used;
+    int tid;
+} job_t;
+
+extern job_t jobs[MAX_JOBS];
+
 extern char cwd[MAX_PATH];
 extern int  g_kbd_tid;
 extern int  g_vga_tid;
@@ -66,8 +76,12 @@ void cmd_mousetid(void);
 void cmd_killatad(void);
 void cmd_atadtid(void);
 
-/* ★ S7c-3 */
 void cmd_setuid(const char *args);
 void cmd_id(void);
+
+/* ★ S7d: Job 控制 */
+void cmd_jobs(void);
+void cmd_fg(const char *args);
+void cmd_bg(const char *args);
 
 #endif

@@ -137,7 +137,6 @@ void cmd_install(const char *args) {
     }
     puts_("install: done.\n");
 }
-
 void cmd_exec(const char *args) {
     static char argv_buf[16][MAX_PATH];
     static const char *argv[17];
@@ -155,12 +154,8 @@ void cmd_exec(const char *args) {
     resolve_path(word, path, MAX_PATH);
 
     int argc = 0;
-
     int i = 0;
-    while (path[i] && i < MAX_PATH - 1) {
-        argv_buf[0][i] = path[i];
-        i++;
-    }
+    while (path[i] && i < MAX_PATH - 1) { argv_buf[0][i] = path[i]; i++; }
     argv_buf[0][i] = 0;
     argv[argc++] = argv_buf[0];
 
@@ -202,9 +197,29 @@ void cmd_exec(const char *args) {
             puts_(b);
             return;
         }
-        puts_("exec: background started, tid=");
-        print_dec(tid);
-        putc_('\n');
+
+        /* ★ S7d: 记录 job */
+        int slot = -1;
+        for (int j = 0; j < MAX_JOBS; j++) {
+            if (!jobs[j].used) {
+                jobs[j].used = 1;
+                jobs[j].tid = tid;
+                slot = j;
+                break;
+            }
+        }
+
+        if (slot >= 0) {
+            puts_("exec: background started, tid=");
+            print_dec(tid);
+            puts_(" [");
+            putc_('0' + (slot + 1));
+            puts_("]\n");
+        } else {
+            puts_("exec: background started, tid=");
+            print_dec(tid);
+            puts_(" (jobs full)\n");
+        }
     } else {
         int tid = sys_exec(path, argc, argv);
         if (tid < 0) {
@@ -421,4 +436,78 @@ void cmd_id(void) {
     print_dec(uid);
     if (uid == 0) puts_(" (root)");
     putc_('\n');
+}
+
+static int parse_job_idx(const char *s) {
+    if (*s == '%') s++;
+    if (*s < '1' || *s > '9') return -1;
+    int idx = *s - '1';
+    if (idx >= MAX_JOBS) return -1;
+    return idx;
+}
+
+void cmd_jobs(void) {
+    int any = 0;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (!jobs[i].used) continue;
+        any = 1;
+        puts_("[");
+        putc_('0' + (i + 1));
+        puts_("] tid=");
+        print_dec(jobs[i].tid);
+        putc_('\n');
+    }
+    if (!any) puts_("(no jobs)\n");
+}
+
+void cmd_fg(const char *args) {
+    if (!args || !*args) { puts_("fg: missing job id\n"); return; }
+    char word[16];
+    if (take_word(args, word, 16) == 0) { puts_("fg: missing job id\n"); return; }
+
+    int idx = parse_job_idx(word);
+    if (idx < 0 || !jobs[idx].used) {
+        puts_("fg: no such job\n");
+        return;
+    }
+
+    int tid = jobs[idx].tid;
+    if (sys_fg(tid) < 0) {
+        puts_("fg: job dead\n");
+        jobs[idx].used = 0;
+        return;
+    }
+
+    if (g_kbd_tid >= 0) {
+        user_msg_t msg;
+        msg.sender  = 0;
+        msg.type    = MSG_KBD_TARGET;
+        msg.data[0] = (uint32_t)tid;
+        for (int i = 1; i < 8; i++) msg.data[i] = 0;
+        sys_send(g_kbd_tid, &msg);
+    }
+
+    puts_("fg: sent job ");
+    putc_('0' + (idx + 1));
+    puts_(" to foreground\n");
+    /* 不阻塞，让主循环的下一次 sys_getchar 自动因为 owner != shell 而阻塞 */
+}
+
+void cmd_bg(const char *args) {
+    if (!args || !*args) { puts_("bg: missing job id\n"); return; }
+    char word[16];
+    if (take_word(args, word, 16) == 0) { puts_("bg: missing job id\n"); return; }
+
+    int idx = parse_job_idx(word);
+    if (idx < 0 || !jobs[idx].used) {
+        puts_("bg: no such job\n");
+        return;
+    }
+
+    /* 把键盘焦点交还给自己（即 shell） */
+    sys_fg(sys_getid());
+
+    puts_("bg: job ");
+    putc_('0' + (idx + 1));
+    puts_(" resumed in background\n");
 }

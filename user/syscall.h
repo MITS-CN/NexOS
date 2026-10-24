@@ -14,8 +14,12 @@
 #define MSG_MOUSE_REPORT   0x303
 #define MSG_SCROLL         0x304
 #define MSG_SIGINT         0x305
+#define MSG_KBD_TARGET     0x203
 #define MSG_ATA_REQ        0x400
 #define MSG_ATA_OWNER_DIED 0x401
+#define MSG_SIGINT         0x305
+#define MSG_KBD_TARGET     0x203
+#define MSG_THREAD_DIED    0x500   /* ★ S7d */
 
 typedef struct {
     int      sender;
@@ -232,6 +236,16 @@ static inline int sys_exec(const char *path, int argc,
         : "=a"(r)
         : "0"(17), "b"(path), "c"(argc), "d"(argv)
         : "esi", "edi", "memory");
+    return r;
+}
+
+/* ★ S7d: 把指定 tid 设为前台（移交键盘） */
+static inline int sys_fg(int tid) {
+    int r;
+    __asm__ volatile("int $0x80"
+        : "=a"(r)
+        : "0"(18), "b"((int)tid)
+        : "ecx", "edx", "esi", "edi", "memory");
     return r;
 }
 

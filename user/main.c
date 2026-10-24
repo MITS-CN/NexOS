@@ -6,6 +6,8 @@ int  g_vga_tid   = -1;
 int  g_mouse_tid = -1;
 int  g_atad_tid  = -1;
 
+job_t jobs[MAX_JOBS] = {0};
+
 static char cmd[512];
 static int  cmd_len = 0;
 
@@ -211,6 +213,9 @@ void cmd_help(void) {
     puts_("  chown UID PATH  - change owner (root only)\n");
     puts_("  id              - show current uid\n");
     puts_("  setuid N        - drop to uid N (irreversible)\n");
+    puts_("  jobs            - list background jobs\n");
+    puts_("  fg %N           - bring job N to foreground\n");
+    puts_("  bg %N           - resume job N in background\n");
     puts_("  exit            - exit shell\n");
     puts_("  part            - list partition table\n");
     puts_("  cp <src> <dst>  - copy file\n");
@@ -303,6 +308,33 @@ static int read_char(void) {
             restart_atad();
             continue;
         }
+
+        /* ★ S7d: 处理后台任务死亡通知 */
+        if (m.type == MSG_THREAD_DIED) {
+            int dead_tid = m.sender;
+            for (int i = 0; i < MAX_JOBS; i++) {
+                if (jobs[i].used && jobs[i].tid == dead_tid) {
+                    jobs[i].used = 0;
+                    putc_('\n');
+                    puts_("[shell] job ");
+                    putc_('0' + (i + 1));
+                    puts_(" exited\n");
+
+                    /* ★ 关键：把键盘目标抢回给当前主 shell */
+                    if (g_kbd_tid >= 0) {
+                        user_msg_t msg;
+                        msg.sender  = 0;
+                        msg.type    = MSG_KBD_TARGET;
+                        msg.data[0] = (uint32_t)sys_getid(); // 自己
+                        for (int k = 1; k < 8; k++) msg.data[k] = 0;
+                        sys_send(g_kbd_tid, &msg);
+                    }
+
+                    return -3;   /* ★ 让主循环刷新提示符 */
+                }
+            }
+            continue;
+        }
     }
 }
 
@@ -355,13 +387,18 @@ static void run_cmd(void) {
     else if (str_eq(p, "atadtid")) cmd_atadtid();
     else if (str_eq(p, "id"))     cmd_id();
     else if (str_prefix(p, "setuid ")) cmd_setuid(p + 7);
+    /* ★ S7d */
+    else if (str_eq(p, "jobs")) cmd_jobs();
+    else if (str_prefix(p, "fg ")) cmd_fg(p + 3);
+    else if (str_prefix(p, "bg ")) cmd_bg(p + 3);
     else { puts_("unknown: "); puts_(p); putc_('\n'); }
 
     cmd_len = 0;
 }
 
 int main(int argc, char **argv) {
-    if (argc > 0) {
+    /* argc > 1: argv 测试模式 */
+    if (argc > 1) {
         puts_("=== argv test ===\n");
         puts_("argc = ");
         print_dec(argc);
@@ -378,24 +415,27 @@ int main(int argc, char **argv) {
         sys_exit();
     }
 
-    puts_("NexOS-NEXT Shell v0.5\n");
+    /* ★ 只有初始 shell (argc == 0) 才启动驱动 */
+    int is_primary_shell = (argc == 0);
+
+    if (is_primary_shell) {
+        puts_("NexOS-NEXT Shell v0.5\n");
+        puts_("Starting VGA driver (/system/drive/vga.elf)...\n");
+        restart_vga();
+        puts_("Starting keyboard driver (/system/drive/kbd.elf)...\n");
+        restart_kbd();
+        puts_("Starting mouse driver (/system/drive/mouse.elf)...\n");
+        restart_mouse();
+        puts_("Starting ATA driver (/system/drive/atad.elf)...\n");
+        restart_atad();
+        puts_("Type 'help' for commands.\n\n");
+    } else {
+        puts_("NexOS-NEXT Subshell\n");
+        puts_("Type 'help' for commands.\n\n");
+    }
 
     ensure_hist_dirs();
     hist_load();
-
-    puts_("Starting VGA driver (/system/drive/vga.elf)...\n");
-    restart_vga();
-
-    puts_("Starting keyboard driver (/system/drive/kbd.elf)...\n");
-    restart_kbd();
-
-    puts_("Starting mouse driver (/system/drive/mouse.elf)...\n");
-    restart_mouse();
-
-    puts_("Starting ATA driver (/system/drive/atad.elf)...\n");
-    restart_atad();
-
-    puts_("Type 'help' for commands.\n\n");
 
     for (;;) {
         puts_(cwd);
@@ -437,6 +477,12 @@ int main(int argc, char **argv) {
                 continue;
             }
 
+            if (c == -3) {
+                cmd_len = 0;
+                hist_pos = -1;
+                break;    /* 打断内层输入循环，回到外层重新打印提示符 */
+            }
+
             if (c == -2) {
                 putc_('\n');
                 puts_("^C\n");
@@ -469,3 +515,4 @@ int main(int argc, char **argv) {
     }
     return 0;
 }
+
